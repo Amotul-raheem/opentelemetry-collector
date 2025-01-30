@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package pmetric
 
@@ -18,9 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gogo/protobuf/jsonpb"
+	jsoniter "github.com/json-iterator/go"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	otlpmetrics "go.opentelemetry.io/collector/pdata/internal/data/protogen/metrics/v1"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 )
 
@@ -31,30 +22,31 @@ var metricsOTLP = func() Metrics {
 	il := rm.ScopeMetrics().AppendEmpty()
 	il.Scope().SetName("name")
 	il.Scope().SetVersion("version")
-	il.Metrics().AppendEmpty().SetName("testMetric")
+	m := il.Metrics().AppendEmpty()
+	m.SetName("testMetric")
+	m.Metadata().PutStr("metadatakey", "metadatavalue")
 	return md
 }()
 
-var metricsJSON = `{"resourceMetrics":[{"resource":{"attributes":[{"key":"host.name","value":{"stringValue":"testHost"}}]},"scopeMetrics":[{"scope":{"name":"name","version":"version"},"metrics":[{"name":"testMetric"}]}]}]}`
+var metricsJSON = `{"resourceMetrics":[{"resource":{"attributes":[{"key":"host.name","value":{"stringValue":"testHost"}}]},"scopeMetrics":[{"scope":{"name":"name","version":"version"},"metrics":[{"name":"testMetric","metadata":[{"key":"metadatakey","value":{"stringValue":"metadatavalue"}}]}]}]}]}`
 
 func TestMetricsJSON(t *testing.T) {
-	encoder := NewJSONMarshaler()
+	encoder := &JSONMarshaler{}
 	jsonBuf, err := encoder.MarshalMetrics(metricsOTLP)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
-	decoder := NewJSONUnmarshaler()
-	var got interface{}
-	got, err = decoder.UnmarshalMetrics(jsonBuf)
-	assert.NoError(t, err)
+	decoder := &JSONUnmarshaler{}
+	got, err := decoder.UnmarshalMetrics(jsonBuf)
+	require.NoError(t, err)
 
 	assert.EqualValues(t, metricsOTLP, got)
 }
 
 func TestMetricsJSON_Marshal(t *testing.T) {
-	encoder := NewJSONMarshaler()
+	encoder := &JSONMarshaler{}
 	jsonBuf, err := encoder.MarshalMetrics(metricsOTLP)
-	assert.NoError(t, err)
-	assert.Equal(t, metricsJSON, string(jsonBuf))
+	require.NoError(t, err)
+	assert.JSONEq(t, metricsJSON, string(jsonBuf))
 }
 
 var metricsSumOTLPFull = func() Metrics {
@@ -82,7 +74,7 @@ var metricsSumOTLPFull = func() Metrics {
 	datapoint := sum.DataPoints().AppendEmpty()
 	datapoint.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Now()))
 	datapoint.SetIntValue(100)
-	datapoint.Attributes().PutStr("string", "value")
+	datapoint.Attributes().PutStr("string", "val")
 	datapoint.Attributes().PutBool("bool", true)
 	datapoint.Attributes().PutInt("int", 1)
 	datapoint.Attributes().PutDouble("double", 1.1)
@@ -121,7 +113,7 @@ var metricsGaugeOTLPFull = func() Metrics {
 	datapoint := gauge.DataPoints().AppendEmpty()
 	datapoint.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Now()))
 	datapoint.SetDoubleValue(10.2)
-	datapoint.Attributes().PutStr("string", "value")
+	datapoint.Attributes().PutStr("string", "val")
 	datapoint.Attributes().PutBool("bool", true)
 	datapoint.Attributes().PutInt("int", 1)
 	datapoint.Attributes().PutDouble("double", 1.1)
@@ -160,7 +152,7 @@ var metricsHistogramOTLPFull = func() Metrics {
 	histogram.SetAggregationTemporality(AggregationTemporalityCumulative)
 	datapoint := histogram.DataPoints().AppendEmpty()
 	datapoint.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Now()))
-	datapoint.Attributes().PutStr("string", "value")
+	datapoint.Attributes().PutStr("string", "val")
 	datapoint.Attributes().PutBool("bool", true)
 	datapoint.Attributes().PutInt("int", 1)
 	datapoint.Attributes().PutDouble("double", 1.1)
@@ -206,7 +198,7 @@ var metricsExponentialHistogramOTLPFull = func() Metrics {
 	datapoint := histogram.DataPoints().AppendEmpty()
 	datapoint.SetScale(1)
 	datapoint.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Now()))
-	datapoint.Attributes().PutStr("string", "value")
+	datapoint.Attributes().PutStr("string", "val")
 	datapoint.Attributes().PutBool("bool", true)
 	datapoint.Attributes().PutInt("int", 1)
 	datapoint.Attributes().PutDouble("double", 1.1)
@@ -258,7 +250,7 @@ var metricsSummaryOTLPFull = func() Metrics {
 	quantile := datapoint.QuantileValues().AppendEmpty()
 	quantile.SetQuantile(0.5)
 	quantile.SetValue(1.2)
-	datapoint.Attributes().PutStr("string", "value")
+	datapoint.Attributes().PutStr("string", "val")
 	datapoint.Attributes().PutBool("bool", true)
 	datapoint.Attributes().PutInt("int", 1)
 	datapoint.Attributes().PutDouble("double", 1.1)
@@ -308,25 +300,254 @@ func Test_jsonUnmarshaler_UnmarshalMetrics(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			for _, opEnumsAsInts := range []bool{true, false} {
-				for _, opEmitDefaults := range []bool{true, false} {
-					for _, opOrigName := range []bool{true, false} {
-						marshaller := &jsonMarshaler{
-							delegate: jsonpb.Marshaler{
-								EnumsAsInts:  opEnumsAsInts,
-								EmitDefaults: opEmitDefaults,
-								OrigName:     opOrigName,
-							}}
-						m := tt.args.md()
-						jsonBuf, err := marshaller.MarshalMetrics(m)
-						assert.NoError(t, err)
-						decoder := NewJSONUnmarshaler()
-						got, err := decoder.UnmarshalMetrics(jsonBuf)
-						assert.NoError(t, err)
-						assert.EqualValues(t, m, got)
-					}
-				}
-			}
+			encoder := &JSONMarshaler{}
+			m := tt.args.md()
+			jsonBuf, err := encoder.MarshalMetrics(m)
+			require.NoError(t, err)
+			decoder := JSONUnmarshaler{}
+			got, err := decoder.UnmarshalMetrics(jsonBuf)
+			require.NoError(t, err)
+			assert.EqualValues(t, m, got)
 		})
 	}
+}
+
+func TestUnmarshalJsoniterMetricsData(t *testing.T) {
+	jsonStr := `{"extra":"", "resourceMetrics": []}`
+	iter := jsoniter.ConfigFastest.BorrowIterator([]byte(jsonStr))
+	defer jsoniter.ConfigFastest.ReturnIterator(iter)
+	val := NewMetrics()
+	val.unmarshalJsoniter(iter)
+	require.NoError(t, iter.Error)
+	assert.EqualValues(t, NewMetrics(), val)
+}
+
+func TestUnmarshalJsoniterResourceMetrics(t *testing.T) {
+	jsonStr := `{"extra":"", "resource": {}, "schemaUrl": "schema", "scopeMetrics": []}`
+	iter := jsoniter.ConfigFastest.BorrowIterator([]byte(jsonStr))
+	defer jsoniter.ConfigFastest.ReturnIterator(iter)
+	val := NewResourceMetrics()
+	val.unmarshalJsoniter(iter)
+	require.NoError(t, iter.Error)
+	assert.EqualValues(t, &otlpmetrics.ResourceMetrics{SchemaUrl: "schema"}, val.orig)
+}
+
+func TestUnmarshalJsoniterScopeMetrics(t *testing.T) {
+	jsonStr := `{"extra":"", "scope": {}, "metrics": [], "schemaUrl": "schema"}`
+	iter := jsoniter.ConfigFastest.BorrowIterator([]byte(jsonStr))
+	defer jsoniter.ConfigFastest.ReturnIterator(iter)
+	val := NewScopeMetrics()
+	val.unmarshalJsoniter(iter)
+	require.NoError(t, iter.Error)
+	assert.EqualValues(t, &otlpmetrics.ScopeMetrics{SchemaUrl: "schema"}, val.orig)
+}
+
+func TestUnmarshalJsoniterMetric(t *testing.T) {
+	type args struct {
+		jsonStr string
+		want    *otlpmetrics.Metric
+	}
+	tests := []struct {
+		name string
+		args args
+	}{
+		{
+			name: "sum has unknown field",
+			args: args{
+				jsonStr: `{"sum":{"extra":""}}`,
+				want: &otlpmetrics.Metric{
+					Data: &otlpmetrics.Metric_Sum{
+						Sum: &otlpmetrics.Sum{},
+					},
+				},
+			},
+		},
+		{
+			name: "gauge has unknown field",
+			args: args{
+				want: &otlpmetrics.Metric{
+					Data: &otlpmetrics.Metric_Gauge{
+						Gauge: &otlpmetrics.Gauge{},
+					},
+				},
+				jsonStr: `{"gauge":{"extra":""}}`,
+			},
+		},
+		{
+			name: "histogram has unknown field",
+			args: args{
+				want: &otlpmetrics.Metric{
+					Data: &otlpmetrics.Metric_Histogram{
+						Histogram: &otlpmetrics.Histogram{},
+					},
+				},
+				jsonStr: `{"histogram":{"extra":""}}`,
+			},
+		},
+		{
+			name: "exponential_histogram has unknown field",
+			args: args{
+				want: &otlpmetrics.Metric{
+					Data: &otlpmetrics.Metric_ExponentialHistogram{
+						ExponentialHistogram: &otlpmetrics.ExponentialHistogram{},
+					},
+				},
+				jsonStr: `{"exponential_histogram":{"extra":""}}`,
+			},
+		},
+		{
+			name: "Summary has unknown field",
+			args: args{
+				want: &otlpmetrics.Metric{
+					Data: &otlpmetrics.Metric_Summary{
+						Summary: &otlpmetrics.Summary{},
+					},
+				},
+				jsonStr: `{"summary":{"extra":""}}`,
+			},
+		},
+		{
+			name: "Metrics has unknown field",
+			args: args{
+				want:    &otlpmetrics.Metric{},
+				jsonStr: `{"extra":""}`,
+			},
+		},
+	}
+	for _, tt := range tests {
+		iter := jsoniter.ConfigFastest.BorrowIterator([]byte(tt.args.jsonStr))
+		jsoniter.ConfigFastest.ReturnIterator(iter)
+		val := NewMetric()
+		val.unmarshalJsoniter(iter)
+		require.NoError(t, iter.Error)
+		assert.EqualValues(t, tt.args.want, val.orig)
+	}
+}
+
+func TestUnmarshalJsoniterNumberDataPoint(t *testing.T) {
+	jsonStr := `{"extra":""}`
+	iter := jsoniter.ConfigFastest.BorrowIterator([]byte(jsonStr))
+	defer jsoniter.ConfigFastest.ReturnIterator(iter)
+	val := NewNumberDataPoint()
+	val.unmarshalJsoniter(iter)
+	require.NoError(t, iter.Error)
+	assert.EqualValues(t, NewNumberDataPoint(), val)
+}
+
+func TestUnmarshalJsoniterHistogramDataPoint(t *testing.T) {
+	jsonStr := `{"extra":"", "count":3}`
+	iter := jsoniter.ConfigFastest.BorrowIterator([]byte(jsonStr))
+	defer jsoniter.ConfigFastest.ReturnIterator(iter)
+	val := NewHistogramDataPoint()
+	val.unmarshalJsoniter(iter)
+	require.NoError(t, iter.Error)
+	assert.EqualValues(t, &otlpmetrics.HistogramDataPoint{Count: 3}, val.orig)
+}
+
+func TestUnmarshalJsoniterExponentialHistogramDataPoint(t *testing.T) {
+	jsonStr := `{"extra":"", "count":3}`
+	iter := jsoniter.ConfigFastest.BorrowIterator([]byte(jsonStr))
+	defer jsoniter.ConfigFastest.ReturnIterator(iter)
+	val := NewExponentialHistogramDataPoint()
+	val.unmarshalJsoniter(iter)
+	require.NoError(t, iter.Error)
+	assert.EqualValues(t, &otlpmetrics.ExponentialHistogramDataPoint{Count: 3}, val.orig)
+}
+
+func TestUnmarshalJsoniterExponentialHistogramDataPointBuckets(t *testing.T) {
+	jsonStr := `{"extra":"", "offset":3, "bucketCounts": [1, 2]}`
+	iter := jsoniter.ConfigFastest.BorrowIterator([]byte(jsonStr))
+	defer jsoniter.ConfigFastest.ReturnIterator(iter)
+	val := NewExponentialHistogramDataPointBuckets()
+	val.unmarshalJsoniter(iter)
+	require.NoError(t, iter.Error)
+	assert.EqualValues(t, &otlpmetrics.ExponentialHistogramDataPoint_Buckets{Offset: 3, BucketCounts: []uint64{1, 2}}, val.orig)
+}
+
+func TestUnmarshalJsoniterSummaryDataPoint(t *testing.T) {
+	jsonStr := `{"extra":"", "count":3, "sum": 3.14}`
+	iter := jsoniter.ConfigFastest.BorrowIterator([]byte(jsonStr))
+	defer jsoniter.ConfigFastest.ReturnIterator(iter)
+	val := NewSummaryDataPoint()
+	val.unmarshalJsoniter(iter)
+	require.NoError(t, iter.Error)
+	assert.EqualValues(t, &otlpmetrics.SummaryDataPoint{
+		Count: 3,
+		Sum:   3.14,
+	}, val.orig)
+}
+
+func TestUnmarshalJsoniterQuantileValue(t *testing.T) {
+	jsonStr := `{"extra":"", "quantile":0.314, "value":3}`
+	iter := jsoniter.ConfigFastest.BorrowIterator([]byte(jsonStr))
+	defer jsoniter.ConfigFastest.ReturnIterator(iter)
+	val := NewSummaryDataPointValueAtQuantile()
+	val.unmarshalJsoniter(iter)
+	require.NoError(t, iter.Error)
+	assert.EqualValues(t, &otlpmetrics.SummaryDataPoint_ValueAtQuantile{
+		Quantile: 0.314,
+		Value:    3,
+	}, val.orig)
+}
+
+func TestExemplarVal(t *testing.T) {
+	tests := []struct {
+		name    string
+		jsonStr string
+		want    *otlpmetrics.Exemplar
+	}{
+		{
+			name:    "int",
+			jsonStr: `{"asInt":1}`,
+			want: &otlpmetrics.Exemplar{
+				Value: &otlpmetrics.Exemplar_AsInt{
+					AsInt: 1,
+				},
+			},
+		},
+		{
+			name:    "double",
+			jsonStr: `{"asDouble":3.14}`,
+			want: &otlpmetrics.Exemplar{
+				Value: &otlpmetrics.Exemplar_AsDouble{
+					AsDouble: 3.14,
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			iter := jsoniter.ConfigFastest.BorrowIterator([]byte(tt.jsonStr))
+			defer jsoniter.ConfigFastest.ReturnIterator(iter)
+			val := NewExemplar()
+			val.unmarshalJsoniter(iter)
+			assert.EqualValues(t, tt.want, val.orig)
+		})
+	}
+}
+
+func TestExemplarInvalidTraceID(t *testing.T) {
+	jsonStr := `{"traceId":"--"}`
+	iter := jsoniter.ConfigFastest.BorrowIterator([]byte(jsonStr))
+	defer jsoniter.ConfigFastest.ReturnIterator(iter)
+	NewExemplar().unmarshalJsoniter(iter)
+	assert.ErrorContains(t, iter.Error, "parse trace_id")
+}
+
+func TestExemplarInvalidSpanID(t *testing.T) {
+	jsonStr := `{"spanId":"--"}`
+	iter := jsoniter.ConfigFastest.BorrowIterator([]byte(jsonStr))
+	defer jsoniter.ConfigFastest.ReturnIterator(iter)
+	NewExemplar().unmarshalJsoniter(iter)
+	assert.ErrorContains(t, iter.Error, "parse span_id")
+}
+
+func TestExemplar(t *testing.T) {
+	jsonStr := `{"extra":""}`
+	iter := jsoniter.ConfigFastest.BorrowIterator([]byte(jsonStr))
+	defer jsoniter.ConfigFastest.ReturnIterator(iter)
+	val := NewExemplar()
+	val.unmarshalJsoniter(iter)
+	require.NoError(t, iter.Error)
+	assert.EqualValues(t, NewExemplar(), val)
 }

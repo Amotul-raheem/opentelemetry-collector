@@ -1,25 +1,36 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package service // import "go.opentelemetry.io/collector/service"
 
 import (
-	"go.opentelemetry.io/collector/config"
+	"fmt"
+
+	"go.opentelemetry.io/collector/service/extensions"
+	"go.opentelemetry.io/collector/service/pipelines"
+	"go.opentelemetry.io/collector/service/telemetry"
 )
 
-type Config = config.Config
+// Config defines the configurable components of the Service.
+type Config struct {
+	// Telemetry is the configuration for collector's own telemetry.
+	Telemetry telemetry.Config `mapstructure:"telemetry"`
 
-type ConfigService = config.Service
+	// Extensions are the ordered list of extensions configured for the service.
+	Extensions extensions.Config `mapstructure:"extensions"`
 
-type ConfigServicePipeline = config.Pipeline
+	// Pipelines are the set of data pipelines configured for the service.
+	Pipelines pipelines.Config `mapstructure:"pipelines"`
+}
+
+func (cfg *Config) Validate() error {
+	if err := cfg.Pipelines.Validate(); err != nil {
+		return fmt.Errorf("service::pipelines config validation failed: %w", err)
+	}
+
+	if err := cfg.Telemetry.Validate(); err != nil {
+		fmt.Printf("service::telemetry config validation failed: %v\n", err)
+	}
+
+	return nil
+}

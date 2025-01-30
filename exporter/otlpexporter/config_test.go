@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package otlpexporter
 
@@ -22,19 +11,22 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"go.opentelemetry.io/collector/config"
+	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configauth"
 	"go.opentelemetry.io/collector/config/configgrpc"
+	"go.opentelemetry.io/collector/config/configopaque"
+	"go.opentelemetry.io/collector/config/configretry"
 	"go.opentelemetry.io/collector/config/configtls"
 	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
+	"go.opentelemetry.io/collector/exporter/exporterbatcher"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
 )
 
 func TestUnmarshalDefaultConfig(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
-	assert.NoError(t, config.UnmarshalExporter(confmap.New(), cfg))
+	require.NoError(t, confmap.New().Unmarshal(&cfg))
 	assert.Equal(t, factory.CreateDefaultConfig(), cfg)
 }
 
@@ -43,34 +35,45 @@ func TestUnmarshalConfig(t *testing.T) {
 	require.NoError(t, err)
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
-	assert.NoError(t, config.UnmarshalExporter(cm, cfg))
+	require.NoError(t, cm.Unmarshal(&cfg))
 	assert.Equal(t,
 		&Config{
-			ExporterSettings: config.NewExporterSettings(config.NewComponentID(typeStr)),
-			TimeoutSettings: exporterhelper.TimeoutSettings{
+			TimeoutConfig: exporterhelper.TimeoutConfig{
 				Timeout: 10 * time.Second,
 			},
-			RetrySettings: exporterhelper.RetrySettings{
-				Enabled:         true,
-				InitialInterval: 10 * time.Second,
-				MaxInterval:     1 * time.Minute,
-				MaxElapsedTime:  10 * time.Minute,
+			RetryConfig: configretry.BackOffConfig{
+				Enabled:             true,
+				InitialInterval:     10 * time.Second,
+				RandomizationFactor: 0.7,
+				Multiplier:          1.3,
+				MaxInterval:         1 * time.Minute,
+				MaxElapsedTime:      10 * time.Minute,
 			},
-			QueueSettings: exporterhelper.QueueSettings{
+			QueueConfig: exporterhelper.QueueConfig{
 				Enabled:      true,
 				NumConsumers: 2,
 				QueueSize:    10,
 			},
-			GRPCClientSettings: configgrpc.GRPCClientSettings{
-				Headers: map[string]string{
+			BatcherConfig: exporterbatcher.Config{
+				Enabled:      true,
+				FlushTimeout: 200 * time.Millisecond,
+				MinSizeConfig: exporterbatcher.MinSizeConfig{
+					MinSizeItems: 1000,
+				},
+				MaxSizeConfig: exporterbatcher.MaxSizeConfig{
+					MaxSizeItems: 10000,
+				},
+			},
+			ClientConfig: configgrpc.ClientConfig{
+				Headers: map[string]configopaque.String{
 					"can you have a . here?": "F0000000-0000-0000-0000-000000000000",
 					"header1":                "234",
 					"another":                "somevalue",
 				},
 				Endpoint:    "1.2.3.4:1234",
 				Compression: "gzip",
-				TLSSetting: configtls.TLSClientSetting{
-					TLSSetting: configtls.TLSSetting{
+				TLSSetting: configtls.ClientConfig{
+					Config: configtls.Config{
 						CAFile: "/var/lib/mycert.pem",
 					},
 					Insecure: false,
@@ -82,7 +85,76 @@ func TestUnmarshalConfig(t *testing.T) {
 				},
 				WriteBufferSize: 512 * 1024,
 				BalancerName:    "round_robin",
-				Auth:            &configauth.Authentication{AuthenticatorID: config.NewComponentID("nop")},
+				Auth:            &configauth.Authentication{AuthenticatorID: component.MustNewID("nop")},
 			},
 		}, cfg)
+}
+
+func TestUnmarshalInvalidConfig(t *testing.T) {
+	cm, err := confmaptest.LoadConf(filepath.Join("testdata", "invalid_configs.yaml"))
+	require.NoError(t, err)
+	factory := NewFactory()
+	for _, tt := range []struct {
+		name     string
+		errorMsg string
+	}{
+		{
+			name:     "no_endpoint",
+			errorMsg: `requires a non-empty "endpoint"`,
+		},
+		{
+			name:     "https_endpoint",
+			errorMsg: `requires a non-empty "endpoint"`,
+		},
+		{
+			name:     "http_endpoint",
+			errorMsg: `requires a non-empty "endpoint"`,
+		},
+		{
+			name:     "invalid_timeout",
+			errorMsg: `'timeout' must be non-negative`,
+		},
+		{
+			name:     "invalid_retry",
+			errorMsg: `'randomization_factor' must be within [0, 1]`,
+		},
+		{
+			name:     "invalid_tls",
+			errorMsg: `invalid TLS min_version: unsupported TLS version: "asd"`,
+		},
+		{
+			name:     "missing_port",
+			errorMsg: `missing port in address`,
+		},
+		{
+			name:     "invalid_port",
+			errorMsg: `invalid port "port"`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := factory.CreateDefaultConfig()
+			sub, err := cm.Sub(tt.name)
+			require.NoError(t, err)
+			assert.NoError(t, sub.Unmarshal(&cfg))
+			assert.ErrorContains(t, component.ValidateConfig(cfg), tt.errorMsg)
+		})
+	}
+}
+
+func TestValidDNSEndpoint(t *testing.T) {
+	factory := NewFactory()
+	cfg := factory.CreateDefaultConfig().(*Config)
+	cfg.Endpoint = "dns://authority/backend.example.com:4317"
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestSanitizeEndpoint(t *testing.T) {
+	factory := NewFactory()
+	cfg := factory.CreateDefaultConfig().(*Config)
+	cfg.Endpoint = "dns://authority/backend.example.com:4317"
+	assert.Equal(t, "authority/backend.example.com:4317", cfg.sanitizedEndpoint())
+	cfg.Endpoint = "dns:///backend.example.com:4317"
+	assert.Equal(t, "backend.example.com:4317", cfg.sanitizedEndpoint())
+	cfg.Endpoint = "dns:////backend.example.com:4317"
+	assert.Equal(t, "/backend.example.com:4317", cfg.sanitizedEndpoint())
 }

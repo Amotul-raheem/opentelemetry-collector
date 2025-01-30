@@ -1,44 +1,66 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package otlpexporter // import "go.opentelemetry.io/collector/exporter/otlpexporter"
 
 import (
+	"errors"
 	"fmt"
+	"net"
+	"regexp"
+	"strconv"
+	"strings"
 
-	"go.opentelemetry.io/collector/config"
+	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configgrpc"
+	"go.opentelemetry.io/collector/config/configretry"
+	"go.opentelemetry.io/collector/exporter/exporterbatcher"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
 )
 
-// Config defines configuration for OpenCensus exporter.
+// Config defines configuration for OTLP exporter.
 type Config struct {
-	config.ExporterSettings        `mapstructure:",squash"` // squash ensures fields are correctly decoded in embedded struct
-	exporterhelper.TimeoutSettings `mapstructure:",squash"` // squash ensures fields are correctly decoded in embedded struct.
-	exporterhelper.QueueSettings   `mapstructure:"sending_queue"`
-	exporterhelper.RetrySettings   `mapstructure:"retry_on_failure"`
+	exporterhelper.TimeoutConfig `mapstructure:",squash"` // squash ensures fields are correctly decoded in embedded struct.
+	exporterhelper.QueueConfig   `mapstructure:"sending_queue"`
+	RetryConfig                  configretry.BackOffConfig `mapstructure:"retry_on_failure"`
 
-	configgrpc.GRPCClientSettings `mapstructure:",squash"` // squash ensures fields are correctly decoded in embedded struct.
+	// Experimental: This configuration is at the early stage of development and may change without backward compatibility
+	// until https://github.com/open-telemetry/opentelemetry-collector/issues/8122 is resolved
+	BatcherConfig exporterbatcher.Config `mapstructure:"batcher"`
+
+	configgrpc.ClientConfig `mapstructure:",squash"` // squash ensures fields are correctly decoded in embedded struct.
 }
 
-var _ config.Exporter = (*Config)(nil)
+func (c *Config) Validate() error {
+	endpoint := c.sanitizedEndpoint()
+	if endpoint == "" {
+		return errors.New(`requires a non-empty "endpoint"`)
+	}
 
-// Validate checks if the exporter configuration is valid
-func (cfg *Config) Validate() error {
-	if err := cfg.QueueSettings.Validate(); err != nil {
-		return fmt.Errorf("queue settings has invalid configuration: %w", err)
+	// Validate that the port is in the address
+	_, port, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return err
+	}
+	if _, err := strconv.Atoi(port); err != nil {
+		return fmt.Errorf(`invalid port "%s"`, port)
 	}
 
 	return nil
 }
+
+func (c *Config) sanitizedEndpoint() string {
+	switch {
+	case strings.HasPrefix(c.Endpoint, "http://"):
+		return strings.TrimPrefix(c.Endpoint, "http://")
+	case strings.HasPrefix(c.Endpoint, "https://"):
+		return strings.TrimPrefix(c.Endpoint, "https://")
+	case strings.HasPrefix(c.Endpoint, "dns://"):
+		r := regexp.MustCompile("^dns://[/]?")
+		return r.ReplaceAllString(c.Endpoint, "")
+	default:
+		return c.Endpoint
+	}
+}
+
+var _ component.Config = (*Config)(nil)

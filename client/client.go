@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 // Package client contains generic representations of clients connecting to
 // different receivers. Components, such as processors or exporters, can make
@@ -78,14 +67,14 @@
 //	  authprinter:
 //	    attribute: subject
 //	exporters:
-//	  logging:
+//	  debug:
 //	service:
 //	  extensions: [oidc]
 //	  pipelines:
 //	    traces:
 //	      receivers: [otlp]
 //	      processors: [authprinter]
-//	      exporters: [logging]
+//	      exporters: [debug]
 package client // import "go.opentelemetry.io/collector/client"
 
 import (
@@ -109,13 +98,7 @@ type Info struct {
 	Auth AuthData
 
 	// Metadata is the request metadata from the client connecting to this connector.
-	// Experimental: *NOTE* this structure is subject to change or removal in the future.
 	Metadata Metadata
-}
-
-// Metadata is an immutable map, meant to contain request metadata.
-type Metadata struct {
-	data map[string][]string
 }
 
 // AuthData represents the authentication data as seen by authenticators tied to
@@ -125,10 +108,9 @@ type AuthData interface {
 	// implementations might define different data types for different
 	// attributes. While "string" is used most of the time, a key named
 	// "membership" might return a list of strings.
-	GetAttribute(string) interface{}
+	GetAttribute(string) any
 
-	// GetAttributes returns the names of all attributes in this authentication
-	// data.
+	// GetAttributeNames returns the names of all attributes in this authentication data.
 	GetAttributeNames() []string
 }
 
@@ -150,30 +132,32 @@ func FromContext(ctx context.Context) Info {
 	return c
 }
 
-// NewMetadata creates a new Metadata object to use in Info. md is used as-is.
+// Metadata is an immutable map, meant to contain request metadata.
+type Metadata struct {
+	data map[string][]string
+}
+
+// NewMetadata creates a new Metadata object to use in Info.
 func NewMetadata(md map[string][]string) Metadata {
+	c := make(map[string][]string, len(md))
+	for k, v := range md {
+		c[strings.ToLower(k)] = v
+	}
 	return Metadata{
-		data: md,
+		data: c,
 	}
 }
 
 // Get gets the value of the key from metadata, returning a copy.
+// The key lookup is case-insensitive.
 func (m Metadata) Get(key string) []string {
-	vals := m.data[key]
-	if len(vals) == 0 {
-		// we didn't find the key, but perhaps it just has different cases?
-		for k, v := range m.data {
-			if strings.EqualFold(key, k) {
-				vals = v
-				// we optimize for the next lookup
-				m.data[key] = v
-			}
-		}
+	if len(m.data) == 0 {
+		return nil
+	}
 
-		// if it's still not found, it's really not here
-		if len(vals) == 0 {
-			return nil
-		}
+	vals := m.data[strings.ToLower(key)]
+	if len(vals) == 0 {
+		return nil
 	}
 
 	ret := make([]string, len(vals))

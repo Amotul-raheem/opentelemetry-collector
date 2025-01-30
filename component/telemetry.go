@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package component // import "go.opentelemetry.io/collector/component"
 
@@ -20,8 +9,10 @@ import (
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/config/configtelemetry"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 )
 
+// TelemetrySettings provides components with APIs to report telemetry.
 type TelemetrySettings struct {
 	// Logger that the factory can use during creation and can pass to the created
 	// component to be used later as well.
@@ -33,7 +24,14 @@ type TelemetrySettings struct {
 	// MeterProvider that the factory can pass to other instrumented third-party libraries.
 	MeterProvider metric.MeterProvider
 
-	// MetricsLevel controls the level of detail for metrics emitted by the collector.
-	// Experimental: *NOTE* this field is experimental and may be changed or removed.
+	// MetricsLevel represents the configuration value set when the collector
+	// is configured. Components may use this level to decide whether it is
+	// appropriate to avoid computationally expensive calculations.
+	//
+	// Deprecated: [v0.119.0] Use https://pkg.go.dev/go.opentelemetry.io/otel/sdk/metric@v1.34.0/internal/x#readme-instrument-enabled instead.
+	// Components will temporarily need to add a view to `service/telemetry` to drop metrics based on the level.
 	MetricsLevel configtelemetry.Level
+
+	// Resource contains the resource attributes for the collector's telemetry.
+	Resource pcommon.Resource
 }

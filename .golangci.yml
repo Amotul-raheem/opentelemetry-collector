@@ -15,12 +15,13 @@ run:
   # which dirs to skip: issues from them won't be reported;
   # can use regexp here: generated.*, regexp is applied on full path;
   # default value is empty list, but default dirs are skipped independently
-  # from this option's value (see skip-dirs-use-default).
-  skip-dirs:
+  # from this option's value (see exclude-dirs-use-default).
+  exclude-dirs:
+    - third_party
 
   # default is true. Enables skipping of directories:
   #   vendor$, third_party$, testdata$, examples$, Godeps$, builtin$
-  skip-dirs-use-default: false
+  exclude-dirs-use-default: false
 
   # which files to skip: they will be analyzed, but issues from them
   # won't be reported. Default value is empty list, but there is
@@ -45,7 +46,7 @@ run:
 # output configuration options
 output:
   # colored-line-number|line-number|json|tab|checkstyle|code-climate, default is "colored-line-number"
-  format: colored-line-number
+  formats: colored-line-number
 
   # print lines of code with issue, default is true
   print-issued-lines: true
@@ -56,9 +57,6 @@ output:
 # all available settings of specific linters
 linters-settings:
   govet:
-    # report about shadowed variables
-    check-shadowing: true
-
     # settings per analyzer
     settings:
       printf: # analyzer name, run `go tool vet help` to see all analyzers
@@ -69,13 +67,12 @@ linters-settings:
           - (github.com/golangci/golangci-lint/pkg/logutils.Log).Fatalf
 
     enable-all: true
-    # TODO: Enable this and fix the alignment issues.
     disable:
+      # We want to order fields according to readability and grouping them by use cases.
+      # This linter does not offer a discernible performance improvement as the structs
+      # defined in this repository are not in the execution hot path.
+      # See https://github.com/open-telemetry/opentelemetry-collector/issues/2789
       - fieldalignment
-
-  revive:
-    # minimal confidence for issues, default is 0.8
-    min-confidence: 0.8
 
   gofmt:
     # simplify code: gofmt with `-s` option, true by default
@@ -93,47 +90,135 @@ linters-settings:
     locale: US
     ignore-words:
       - cancelled
-      - metre
-      - meter
-      - metres
-      - kilometre
-      - kilometres
+
+  nolintlint:
+    require-specific: true
+
+  perfsprint:
+    # Optimizes even if it requires an int or uint type cast.
+    int-conversion: true
+    # Optimizes into `err.Error()` even if it is only equivalent for non-nil errors.
+    err-error: true
+    # Optimizes `fmt.Errorf`.
+    errorf: true
+    # Optimizes `fmt.Sprintf` with only one argument.
+    sprintf1: true
+    # Optimizes into strings concatenation.
+    strconcat: true
+
+  revive:
+    # minimal confidence for issues, default is 0.8
+    min-confidence: 0.8
+    rules:
+      # Blank import should be only in a main or test package, or have a comment justifying it.
+      - name: blank-imports
+      # context.Context() should be the first parameter of a function when provided as argument.
+      - name: context-as-argument
+      # Basic types should not be used as a key in `context.WithValue`
+      - name: context-keys-type
+      # Importing with `.` makes the programs much harder to understand
+      - name: dot-imports
+      - name: early-return
+        arguments:
+          - "preserveScope"
+      # Empty blocks make code less readable and could be a symptom of a bug or unfinished refactoring.
+      - name: empty-block
+      # for better readability, variables of type `error` must be named with the prefix `err`.
+      - name: error-naming
+      # for better readability, the errors should be last in the list of returned values by a function.
+      - name: error-return
+      # for better readability, error messages should not be capitalized or end with punctuation or a newline.
+      - name: error-strings
+      # report when replacing `errors.New(fmt.Sprintf())` with `fmt.Errorf()` is possible
+      - name: errorf
+      # incrementing an integer variable by 1 is recommended to be done using the `++` operator
+      - name: increment-decrement
+      # highlights redundant else-blocks that can be eliminated from the code
+      - name: indent-error-flow
+      # This rule suggests a shorter way of writing ranges that do not use the second value.
+      - name: range
+      # receiver names in a method should reflect the struct name (p for Person, for example)
+      - name: receiver-naming
+      # redefining built in names (true, false, append, make) can lead to bugs very difficult to detect.
+      - name: redefines-builtin-id
+      # redundant else-blocks that can be eliminated from the code.
+      - name: superfluous-else
+        arguments:
+          - "preserveScope"
+      # prevent confusing name for variables when using `time` package
+      - name: time-naming
+      # warns when an exported function or method returns a value of an un-exported type.
+      - name: unexported-return
+      - name: unnecessary-stmt
+      # spots and proposes to remove unreachable code. also helps to spot errors
+      - name: unreachable-code
+      # Functions or methods with unused parameters can be a symptom of an unfinished refactoring or a bug.
+      - name: unused-parameter
+      # Since Go 1.18, interface{} has an alias: any. This rule proposes to replace instances of interface{} with any.
+      - name: use-any
+      # report when a variable declaration can be simplified
+      - name: var-declaration
+      # warns when initialism, variable or package naming conventions are not followed.
+      - name: var-naming
 
   depguard:
-    list-type: denylist
-    include-go-root: true
-    packages-with-error-message:
-      # See https://github.com/open-telemetry/opentelemetry-collector/issues/5200 for rationale
-      - sync/atomic: "Use go.uber.org/atomic instead of sync/atomic"
-      - github.com/pkg/errors: "Use 'errors' or 'fmt' instead of github.com/pkg/errors"
-    # Add a different guard rule so that we can ignore tests.
-    additional-guards:
-      - list-type: denylist
-        include-go-root: true
-        packages-with-error-message:
-          - go.opentelemetry.io/proto: "Use go.opentelemetry.io/collector/pdata instead"
-        # Allow in tests for testing pdata or other receivers/exporters that expect OTLP.
-        ignore-file-rules:
-          - "**/*_test.go"
+    rules:
+      denied-deps:
+        deny:
+          - pkg: go.uber.org/atomic
+            desc: "Use 'sync/atomic' instead of go.uber.org/atomic"
+          - pkg: github.com/pkg/errors
+            desc: "Use 'errors' or 'fmt' instead of github.com/pkg/errors"
+          - pkg: github.com/hashicorp/go-multierror
+            desc: "Use go.uber.org/multierr instead of github.com/hashicorp/go-multierror"
+          - pkg: "math/rand$"
+            desc: "Use the newer 'math/rand/v2' instead of math/rand"
+        # Add a different guard rule so that we can ignore tests.
+      ignore-in-test:
+          deny:
+          - pkg: go.opentelemetry.io/proto
+            desc: "Use go.opentelemetry.io/collector/pdata instead"
+            # Allow in tests for testing pdata or other receivers/exporters that expect OTLP.
+          files:
+            - "!**/*_test.go"
+
+  testifylint:
+    enable-all: true
+
+  thelper:
+    test:
+      begin: false
+    benchmark:
+      begin: false
+    tb:
+      begin: false
+    fuzz:
+      begin: false
 
 linters:
   enable:
+    - copyloopvar
     - depguard
     - errcheck
     - errorlint
-    - exportloopref
     - gocritic
-    - gofmt
+    - gofumpt
     - goimports
     - gosec
     - govet
     - misspell
+    - nolintlint
+    - perfsprint
     - revive
     - staticcheck
     - tenv
+    - testifylint
+    - thelper
     - unconvert
     - unused
     - unparam
+    - usestdlibvars
+    - whitespace
 
 issues:
   # Excluding configuration per-path, per-linter, per-text and per-source
@@ -142,10 +227,6 @@ issues:
       linters:
         - gosec
     - text: "G402:"
-      linters:
-        - gosec
-    # https://github.com/open-telemetry/opentelemetry-collector/issues/5699
-    - text: "G112:"
       linters:
         - gosec
 

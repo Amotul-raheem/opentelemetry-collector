@@ -1,5 +1,7 @@
 bin/
 dist/
+.tools/
+local
 
 # GoLand IDEA
 /.idea/
@@ -18,13 +20,20 @@ dist/
 *.DS_Store
 
 # Coverage
-coverage.out
+coverage/*
 coverage.txt
-coverage.html
+
+# Benchmarks
+benchmarks.txt
 
 # Wix
 *.wixobj
 *.wixpdb
 
-# OpenTelemetry proto files which are normally cleaned up
-model/internal/opentelemetry-proto
+# golang
+go.work*
+
+# npm (used for markdown-link-check)
+node_modules/*
+package-lock.json
+

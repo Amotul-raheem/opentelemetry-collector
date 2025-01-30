@@ -7,7 +7,7 @@ fields:
   doc: |
     Timeout is the timeout for every attempt to send data to the backend.
 - name: sending_queue
-  type: exporterhelper.QueueSettings
+  type: exporterhelper.QueueConfig
   kind: struct
   fields:
   - name: enabled
@@ -22,7 +22,7 @@ fields:
       NumConsumers is the number of consumers from the queue.
   - name: queue_size
     kind: int
-    default: 5000
+    default: 1000
     doc: |
       QueueSize is the maximum number of batches allowed in queue at a given time.
 - name: retry_on_failure
@@ -40,6 +40,17 @@ fields:
     default: 5s
     doc: |
       InitialInterval the time to wait after the first failure before retrying.
+  - name: randomization_factor
+    kind: float64
+    default: 0.5
+    doc: |
+      RandomizationFactor is a random factor used to calculate next backoffs.
+      Randomized interval = RetryInterval * (1 ± RandomizationFactor)
+  - name: multiplier
+    kind: float64
+    default: 1.5
+    doc: |
+      Multiplier is the value multiplied by the backoff interval bounds
   - name: max_interval
     type: time.Duration
     kind: int64
@@ -57,8 +68,8 @@ fields:
 - name: endpoint
   kind: string
   doc: |
-    The target to which the exporter is going to send traces or metrics,
-    using the gRPC protocol. The valid syntax is described at
+    The target to which the exporter is going to send traces, metrics, logs or
+    profiles using the gRPC protocol. The valid syntax is described at
     https://github.com/grpc/grpc/blob/master/doc/naming.md.
 - name: compression
   kind: string

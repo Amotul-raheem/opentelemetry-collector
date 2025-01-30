@@ -1,27 +1,15 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package builder
 
 import (
-	"errors"
 	"os"
 	"strings"
 	"testing"
 
-	"github.com/knadh/koanf"
 	"github.com/knadh/koanf/parsers/yaml"
+	"github.com/knadh/koanf/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -40,7 +28,7 @@ func TestParseModules(t *testing.T) {
 
 	// test
 	err := cfg.ParseModules()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// verify
 	assert.Equal(t, "github.com/org/repo v0.1.2", cfg.Extensions[0].GoMod)
@@ -48,18 +36,33 @@ func TestParseModules(t *testing.T) {
 	assert.Equal(t, "repo", cfg.Extensions[0].Name)
 }
 
+func TestInvalidConverter(t *testing.T) {
+	// Create a Config instance with invalid Converters
+	config := &Config{
+		ConfmapConverters: []Module{
+			{
+				Path: "./invalid/module/path", // Invalid module path to trigger an error
+			},
+		},
+	}
+
+	// Call the method and expect an error
+	err := config.ParseModules()
+	require.Error(t, err, "expected an error when parsing invalid modules")
+}
+
 func TestRelativePath(t *testing.T) {
 	// prepare
 	cfg := Config{
 		Extensions: []Module{{
 			GoMod: "some-module",
-			Path:  "./some-module",
+			Path:  "./templates",
 		}},
 	}
 
 	// test
 	err := cfg.ParseModules()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// verify
 	cwd, err := os.Getwd()
@@ -84,13 +87,13 @@ func TestModuleFromCore(t *testing.T) {
 
 	// test
 	err := cfg.ParseModules()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// verify
 	assert.True(t, strings.HasPrefix(cfg.Extensions[0].Name, "otlpreceiver"))
 }
 
-func TestInvalidModule(t *testing.T) {
+func TestMissingModule(t *testing.T) {
 	type invalidModuleTest struct {
 		cfg Config
 		err error
@@ -100,11 +103,20 @@ func TestInvalidModule(t *testing.T) {
 		{
 			cfg: Config{
 				Logger: zap.NewNop(),
+				ConfmapProviders: []Module{{
+					Import: "invalid",
+				}},
+			},
+			err: errMissingGoMod,
+		},
+		{
+			cfg: Config{
+				Logger: zap.NewNop(),
 				Extensions: []Module{{
 					Import: "invalid",
 				}},
 			},
-			err: ErrInvalidGoMod,
+			err: errMissingGoMod,
 		},
 		{
 			cfg: Config{
@@ -113,16 +125,16 @@ func TestInvalidModule(t *testing.T) {
 					Import: "invalid",
 				}},
 			},
-			err: ErrInvalidGoMod,
+			err: errMissingGoMod,
 		},
 		{
 			cfg: Config{
 				Logger: zap.NewNop(),
 				Exporters: []Module{{
-					Import: "invali",
+					Import: "invalid",
 				}},
 			},
-			err: ErrInvalidGoMod,
+			err: errMissingGoMod,
 		},
 		{
 			cfg: Config{
@@ -131,19 +143,46 @@ func TestInvalidModule(t *testing.T) {
 					Import: "invalid",
 				}},
 			},
-			err: ErrInvalidGoMod,
+			err: errMissingGoMod,
+		},
+		{
+			cfg: Config{
+				Logger: zap.NewNop(),
+				Connectors: []Module{{
+					Import: "invalid",
+				}},
+			},
+			err: errMissingGoMod,
+		},
+		{
+			cfg: Config{
+				Logger: zap.NewNop(),
+				ConfmapConverters: []Module{{
+					Import: "invalid",
+				}},
+			},
+			err: errMissingGoMod,
 		},
 	}
 
 	for _, test := range configurations {
-		assert.True(t, errors.Is(test.cfg.Validate(), test.err))
+		assert.ErrorIs(t, test.cfg.Validate(), test.err)
 	}
 }
 
 func TestNewDefaultConfig(t *testing.T) {
-	cfg := NewDefaultConfig()
+	cfg, err := NewDefaultConfig()
+	require.NoError(t, err)
 	require.NoError(t, cfg.ParseModules())
+	assert.NoError(t, cfg.Validate())
+	assert.NoError(t, cfg.SetGoPath())
 	require.NoError(t, cfg.Validate())
+	assert.False(t, cfg.Distribution.DebugCompilation)
+	assert.Empty(t, cfg.Distribution.BuildTags)
+	assert.False(t, cfg.LDSet)
+	assert.Empty(t, cfg.LDFlags)
+	assert.False(t, cfg.GCSet)
+	assert.Empty(t, cfg.GCFlags)
 }
 
 func TestNewBuiltinConfig(t *testing.T) {
@@ -156,14 +195,15 @@ func TestNewBuiltinConfig(t *testing.T) {
 	require.NoError(t, k.UnmarshalWithConf("", &cfg, koanf.UnmarshalConf{Tag: "mapstructure"}))
 	assert.NoError(t, cfg.ParseModules())
 	assert.NoError(t, cfg.Validate())
+	assert.NoError(t, cfg.SetGoPath())
 
 	// Unlike the config initialized in NewDefaultConfig(), we expect
 	// the builtin default to be practically useful, so there must be
 	// a set of modules present.
-	assert.NotZero(t, len(cfg.Receivers))
-	assert.NotZero(t, len(cfg.Exporters))
-	assert.NotZero(t, len(cfg.Extensions))
-	assert.NotZero(t, len(cfg.Processors))
+	assert.NotEmpty(t, cfg.Receivers)
+	assert.NotEmpty(t, cfg.Exporters)
+	assert.NotEmpty(t, cfg.Extensions)
+	assert.NotEmpty(t, cfg.Processors)
 }
 
 func TestSkipGoValidation(t *testing.T) {
@@ -175,6 +215,7 @@ func TestSkipGoValidation(t *testing.T) {
 		SkipGetModules:  true,
 	}
 	assert.NoError(t, cfg.Validate())
+	assert.NoError(t, cfg.SetGoPath())
 }
 
 func TestSkipGoInitialization(t *testing.T) {
@@ -183,5 +224,52 @@ func TestSkipGoInitialization(t *testing.T) {
 		SkipGetModules:  true,
 	}
 	assert.NoError(t, cfg.Validate())
+	assert.NoError(t, cfg.SetGoPath())
 	assert.Zero(t, cfg.Distribution.Go)
+}
+
+func TestBuildTagConfig(t *testing.T) {
+	cfg := Config{
+		Distribution: Distribution{
+			BuildTags: "customTag",
+		},
+		SkipCompilation: true,
+		SkipGetModules:  true,
+	}
+	require.NoError(t, cfg.Validate())
+	assert.Equal(t, "customTag", cfg.Distribution.BuildTags)
+}
+
+func TestDebugOptionSetConfig(t *testing.T) {
+	cfg := Config{
+		Distribution: Distribution{
+			DebugCompilation: true,
+		},
+		SkipCompilation: true,
+		SkipGetModules:  true,
+	}
+	require.NoError(t, cfg.Validate())
+	assert.True(t, cfg.Distribution.DebugCompilation)
+}
+
+func TestAddsDefaultProviders(t *testing.T) {
+	cfg, err := NewDefaultConfig()
+	require.NoError(t, err)
+	require.NoError(t, cfg.ParseModules())
+	assert.Len(t, cfg.ConfmapProviders, 5)
+}
+
+func TestSkipsNilFieldValidation(t *testing.T) {
+	cfg, err := NewDefaultConfig()
+	require.NoError(t, err)
+	cfg.ConfmapProviders = nil
+	cfg.ConfmapConverters = nil
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestValidateDeprecatedOtelColVersion(t *testing.T) {
+	cfg, err := NewDefaultConfig()
+	require.NoError(t, err)
+	cfg.Distribution.OtelColVersion = "test"
+	assert.Error(t, cfg.Validate())
 }

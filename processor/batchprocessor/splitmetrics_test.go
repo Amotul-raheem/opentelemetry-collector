@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package batchprocessor
 
@@ -19,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"go.opentelemetry.io/collector/internal/testdata"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/pdata/testdata"
 )
 
 func TestSplitMetrics_noop(t *testing.T) {
@@ -30,7 +19,7 @@ func TestSplitMetrics_noop(t *testing.T) {
 	assert.Equal(t, td, split)
 
 	i := 0
-	td.ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics().RemoveIf(func(_ pmetric.Metric) bool {
+	td.ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics().RemoveIf(func(pmetric.Metric) bool {
 		i++
 		return i > 5
 	})
@@ -203,7 +192,7 @@ func TestSplitMetricsAllTypes(t *testing.T) {
 	assert.Equal(t, "test-metric-int-0-1", gaugeDouble.Name())
 	assert.Equal(t, 1, sumInt.Sum().DataPoints().Len())
 	assert.Equal(t, pmetric.AggregationTemporalityCumulative, sumInt.Sum().AggregationTemporality())
-	assert.Equal(t, true, sumInt.Sum().IsMonotonic())
+	assert.True(t, sumInt.Sum().IsMonotonic())
 	assert.Equal(t, "test-metric-int-0-2", sumInt.Name())
 
 	split = splitMetrics(splitSize, md)
@@ -213,11 +202,11 @@ func TestSplitMetricsAllTypes(t *testing.T) {
 	sumDouble := split.ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics().At(1)
 	assert.Equal(t, 1, sumInt.Sum().DataPoints().Len())
 	assert.Equal(t, pmetric.AggregationTemporalityCumulative, sumInt.Sum().AggregationTemporality())
-	assert.Equal(t, true, sumInt.Sum().IsMonotonic())
+	assert.True(t, sumInt.Sum().IsMonotonic())
 	assert.Equal(t, "test-metric-int-0-2", sumInt.Name())
 	assert.Equal(t, 1, sumDouble.Sum().DataPoints().Len())
 	assert.Equal(t, pmetric.AggregationTemporalityCumulative, sumDouble.Sum().AggregationTemporality())
-	assert.Equal(t, true, sumDouble.Sum().IsMonotonic())
+	assert.True(t, sumDouble.Sum().IsMonotonic())
 	assert.Equal(t, "test-metric-int-0-3", sumDouble.Name())
 
 	split = splitMetrics(splitSize, md)
@@ -227,7 +216,7 @@ func TestSplitMetricsAllTypes(t *testing.T) {
 	histogram := split.ResourceMetrics().At(0).ScopeMetrics().At(0).Metrics().At(1)
 	assert.Equal(t, 1, sumDouble.Sum().DataPoints().Len())
 	assert.Equal(t, pmetric.AggregationTemporalityCumulative, sumDouble.Sum().AggregationTemporality())
-	assert.Equal(t, true, sumDouble.Sum().IsMonotonic())
+	assert.True(t, sumDouble.Sum().IsMonotonic())
 	assert.Equal(t, "test-metric-int-0-3", sumDouble.Name())
 	assert.Equal(t, 1, histogram.Histogram().DataPoints().Len())
 	assert.Equal(t, pmetric.AggregationTemporalityCumulative, histogram.Histogram().AggregationTemporality())

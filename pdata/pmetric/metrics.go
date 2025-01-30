@@ -1,23 +1,11 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package pmetric // import "go.opentelemetry.io/collector/pdata/pmetric"
 
 import (
 	"go.opentelemetry.io/collector/pdata/internal"
 	otlpcollectormetrics "go.opentelemetry.io/collector/pdata/internal/data/protogen/collector/metrics/v1"
-	otlpmetrics "go.opentelemetry.io/collector/pdata/internal/data/protogen/metrics/v1"
 )
 
 // Metrics is the top-level struct that is propagated through the metrics pipeline.
@@ -25,11 +13,16 @@ import (
 type Metrics internal.Metrics
 
 func newMetrics(orig *otlpcollectormetrics.ExportMetricsServiceRequest) Metrics {
-	return Metrics(internal.NewMetrics(orig))
+	state := internal.StateMutable
+	return Metrics(internal.NewMetrics(orig, &state))
 }
 
 func (ms Metrics) getOrig() *otlpcollectormetrics.ExportMetricsServiceRequest {
 	return internal.GetOrigMetrics(internal.Metrics(ms))
+}
+
+func (ms Metrics) getState() *internal.State {
+	return internal.GetMetricsState(internal.Metrics(ms))
 }
 
 // NewMetrics creates a new Metrics struct.
@@ -37,21 +30,19 @@ func NewMetrics() Metrics {
 	return newMetrics(&otlpcollectormetrics.ExportMetricsServiceRequest{})
 }
 
-// CopyTo copies all metrics from ms to dest.
+// IsReadOnly returns true if this Metrics instance is read-only.
+func (ms Metrics) IsReadOnly() bool {
+	return *ms.getState() == internal.StateReadOnly
+}
+
+// CopyTo copies the Metrics instance overriding the destination.
 func (ms Metrics) CopyTo(dest Metrics) {
 	ms.ResourceMetrics().CopyTo(dest.ResourceMetrics())
 }
 
-// MoveTo moves all properties from the current struct to dest
-// resetting the current instance to its zero value.
-func (ms Metrics) MoveTo(dest Metrics) {
-	*dest.getOrig() = *ms.getOrig()
-	*ms.getOrig() = otlpcollectormetrics.ExportMetricsServiceRequest{}
-}
-
 // ResourceMetrics returns the ResourceMetricsSlice associated with this Metrics.
 func (ms Metrics) ResourceMetrics() ResourceMetricsSlice {
-	return newResourceMetricsSlice(&ms.getOrig().ResourceMetrics)
+	return newResourceMetricsSlice(&ms.getOrig().ResourceMetrics, internal.GetMetricsState(internal.Metrics(ms)))
 }
 
 // MetricCount calculates the total number of metrics.
@@ -98,147 +89,7 @@ func (ms Metrics) DataPointCount() (dataPointCount int) {
 	return
 }
 
-// MetricType specifies the type of data in a Metric.
-type MetricType int32
-
-const (
-	// MetricTypeEmpty means that metric type is unset.
-	MetricTypeEmpty MetricType = iota
-	MetricTypeGauge
-	MetricTypeSum
-	MetricTypeHistogram
-	MetricTypeExponentialHistogram
-	MetricTypeSummary
-)
-
-// Deprecated: [0.62.0] Use MetricTypeEmpty instead.
-const MetricTypeNone = MetricTypeEmpty
-
-// String returns the string representation of the MetricType.
-func (mdt MetricType) String() string {
-	switch mdt {
-	case MetricTypeEmpty:
-		return "Empty"
-	case MetricTypeGauge:
-		return "Gauge"
-	case MetricTypeSum:
-		return "Sum"
-	case MetricTypeHistogram:
-		return "Histogram"
-	case MetricTypeExponentialHistogram:
-		return "ExponentialHistogram"
-	case MetricTypeSummary:
-		return "Summary"
-	}
-	return ""
+// MarkReadOnly marks the Metrics as shared so that no further modifications can be done on it.
+func (ms Metrics) MarkReadOnly() {
+	internal.SetMetricsState(internal.Metrics(ms), internal.StateReadOnly)
 }
-
-// AggregationTemporality defines how a metric aggregator reports aggregated values.
-// It describes how those values relate to the time interval over which they are aggregated.
-type AggregationTemporality int32
-
-const (
-	// AggregationTemporalityUnspecified is the default AggregationTemporality, it MUST NOT be used.
-	AggregationTemporalityUnspecified = AggregationTemporality(otlpmetrics.AggregationTemporality_AGGREGATION_TEMPORALITY_UNSPECIFIED)
-	// AggregationTemporalityDelta is a AggregationTemporality for a metric aggregator which reports changes since last report time.
-	AggregationTemporalityDelta = AggregationTemporality(otlpmetrics.AggregationTemporality_AGGREGATION_TEMPORALITY_DELTA)
-	// AggregationTemporalityCumulative is a AggregationTemporality for a metric aggregator which reports changes since a fixed start time.
-	AggregationTemporalityCumulative = AggregationTemporality(otlpmetrics.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE)
-)
-
-// String returns the string representation of the AggregationTemporality.
-func (at AggregationTemporality) String() string {
-	switch at {
-	case AggregationTemporalityUnspecified:
-		return "Unspecified"
-	case AggregationTemporalityDelta:
-		return "Delta"
-	case AggregationTemporalityCumulative:
-		return "Cumulative"
-	}
-	return ""
-}
-
-// Deprecated: [v0.62.0] Use AggregationTemporality instead.
-type MetricAggregationTemporality = AggregationTemporality
-
-const (
-	// Deprecated: [v0.62.0] Use AggregationTemporalityUnspecified instead.
-	MetricAggregationTemporalityUnspecified = AggregationTemporalityUnspecified
-
-	// Deprecated: [v0.62.0] Use AggregationTemporalityDelta instead.
-	MetricAggregationTemporalityDelta = AggregationTemporalityDelta
-
-	// Deprecated: [v0.62.0] Use AggregationTemporalityCumulative instead.
-	MetricAggregationTemporalityCumulative = AggregationTemporalityCumulative
-)
-
-// NumberDataPointValueType specifies the type of NumberDataPoint value.
-type NumberDataPointValueType int32
-
-const (
-	// NumberDataPointValueTypeEmpty means that data point value is unset.
-	NumberDataPointValueTypeEmpty NumberDataPointValueType = iota
-	NumberDataPointValueTypeInt
-	NumberDataPointValueTypeDouble
-)
-
-// Deprecated: [0.62.0] Use NumberDataPointValueTypeEmpty instead.
-const NumberDataPointValueTypeNone = NumberDataPointValueTypeEmpty
-
-// String returns the string representation of the NumberDataPointValueType.
-func (nt NumberDataPointValueType) String() string {
-	switch nt {
-	case NumberDataPointValueTypeEmpty:
-		return "Empty"
-	case NumberDataPointValueTypeInt:
-		return "Int"
-	case NumberDataPointValueTypeDouble:
-		return "Double"
-	}
-	return ""
-}
-
-// ExemplarValueType specifies the type of Exemplar measurement value.
-type ExemplarValueType int32
-
-const (
-	// ExemplarValueTypeEmpty means that exemplar value is unset.
-	ExemplarValueTypeEmpty ExemplarValueType = iota
-	ExemplarValueTypeInt
-	ExemplarValueTypeDouble
-)
-
-// Deprecated: [0.62.0] Use ExemplarValueTypeEmpty instead.
-const ExemplarValueTypeNone = ExemplarValueTypeEmpty
-
-// String returns the string representation of the ExemplarValueType.
-func (nt ExemplarValueType) String() string {
-	switch nt {
-	case ExemplarValueTypeEmpty:
-		return "Empty"
-	case ExemplarValueTypeInt:
-		return "Int"
-	case ExemplarValueTypeDouble:
-		return "Double"
-	}
-	return ""
-}
-
-// Deprecated: [v0.62.0] Use ExponentialHistogramDataPointBuckets instead.
-type Buckets = ExponentialHistogramDataPointBuckets
-
-// Deprecated: [v0.62.0] Use NewExponentialHistogramDataPointBuckets instead.
-var NewBuckets = NewExponentialHistogramDataPointBuckets
-
-// Deprecated: [v0.62.0] Use SummaryDataPointValueAtQuantile instead.
-type ValueAtQuantile = SummaryDataPointValueAtQuantile
-
-// Deprecated: [v0.62.0] Use NewSummaryDataPointValueAtQuantile instead.
-var NewValueAtQuantile = NewSummaryDataPointValueAtQuantile
-
-// Deprecated: [v0.62.0] Use SummaryDataPointValueAtQuantileSlice instead.
-type ValueAtQuantileSlice = SummaryDataPointValueAtQuantileSlice
-
-// Deprecated: [v0.62.0] Use NewSummaryDataPointValueAtQuantileSlice instead.
-var NewValueAtQuantileSlice = NewSummaryDataPointValueAtQuantileSlice

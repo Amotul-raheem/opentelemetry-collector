@@ -1,16 +1,5 @@
-// Copyright  The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 package mapstructure // import "go.opentelemetry.io/collector/confmap/internal/mapstructure"
 
@@ -21,7 +10,8 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/mitchellh/mapstructure"
+	"github.com/go-viper/mapstructure/v2"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -33,9 +23,7 @@ const (
 	optionSkip          = "-"
 )
 
-var (
-	errNonStringEncodedKey = errors.New("non string-encoded key")
-)
+var errNonStringEncodedKey = errors.New("non string-encoded key")
 
 // tagInfo stores the mapstructure tag details.
 type tagInfo struct {
@@ -64,12 +52,12 @@ func New(cfg *EncoderConfig) *Encoder {
 
 // Encode takes the input and uses reflection to encode it to
 // an interface based on the mapstructure spec.
-func (e *Encoder) Encode(input interface{}) (interface{}, error) {
+func (e *Encoder) Encode(input any) (any, error) {
 	return e.encode(reflect.ValueOf(input))
 }
 
 // encode processes the value based on the reflect.Kind.
-func (e *Encoder) encode(value reflect.Value) (interface{}, error) {
+func (e *Encoder) encode(value reflect.Value) (any, error) {
 	if value.IsValid() {
 		switch value.Kind() {
 		case reflect.Interface, reflect.Ptr:
@@ -89,7 +77,7 @@ func (e *Encoder) encode(value reflect.Value) (interface{}, error) {
 
 // encodeHook calls the EncodeHook in the EncoderConfig with the value passed in.
 // This is called before processing structs and for primitive data types.
-func (e *Encoder) encodeHook(value reflect.Value) (interface{}, error) {
+func (e *Encoder) encodeHook(value reflect.Value) (any, error) {
 	if e.config != nil && e.config.EncodeHook != nil {
 		out, err := mapstructure.DecodeHookExec(e.config.EncodeHook, value, value)
 		if err != nil {
@@ -102,7 +90,7 @@ func (e *Encoder) encodeHook(value reflect.Value) (interface{}, error) {
 
 // encodeStruct encodes the struct by iterating over the fields, getting the
 // mapstructure tagInfo for each exported field, and encoding the value.
-func (e *Encoder) encodeStruct(value reflect.Value) (interface{}, error) {
+func (e *Encoder) encodeStruct(value reflect.Value) (any, error) {
 	if value.Kind() != reflect.Struct {
 		return nil, &reflect.ValueError{
 			Method: "encodeStruct",
@@ -119,7 +107,7 @@ func (e *Encoder) encodeStruct(value reflect.Value) (interface{}, error) {
 	if value.Kind() != reflect.Struct {
 		return e.encode(value)
 	}
-	result := make(map[string]interface{})
+	result := make(map[string]any)
 	for i := 0; i < value.NumField(); i++ {
 		field := value.Field(i)
 		if field.CanInterface() {
@@ -132,7 +120,7 @@ func (e *Encoder) encodeStruct(value reflect.Value) (interface{}, error) {
 				return nil, fmt.Errorf("error encoding field %q: %w", info.name, err)
 			}
 			if info.squash {
-				if m, ok := encoded.(map[string]interface{}); ok {
+				if m, ok := encoded.(map[string]any); ok {
 					for k, v := range m {
 						result[k] = v
 					}
@@ -146,14 +134,14 @@ func (e *Encoder) encodeStruct(value reflect.Value) (interface{}, error) {
 }
 
 // encodeSlice iterates over the slice and encodes each of the elements.
-func (e *Encoder) encodeSlice(value reflect.Value) (interface{}, error) {
+func (e *Encoder) encodeSlice(value reflect.Value) (any, error) {
 	if value.Kind() != reflect.Slice {
 		return nil, &reflect.ValueError{
 			Method: "encodeSlice",
 			Kind:   value.Kind(),
 		}
 	}
-	result := make([]interface{}, value.Len())
+	result := make([]any, value.Len())
 	for i := 0; i < value.Len(); i++ {
 		var err error
 		if result[i], err = e.encode(value.Index(i)); err != nil {
@@ -165,25 +153,32 @@ func (e *Encoder) encodeSlice(value reflect.Value) (interface{}, error) {
 
 // encodeMap encodes a map by encoding the key and value. Returns errNonStringEncodedKey
 // if the key is not encoded into a string.
-func (e *Encoder) encodeMap(value reflect.Value) (interface{}, error) {
+func (e *Encoder) encodeMap(value reflect.Value) (any, error) {
 	if value.Kind() != reflect.Map {
 		return nil, &reflect.ValueError{
 			Method: "encodeMap",
 			Kind:   value.Kind(),
 		}
 	}
-	result := make(map[string]interface{})
+	result := make(map[string]any)
 	iterator := value.MapRange()
 	for iterator.Next() {
 		encoded, err := e.encode(iterator.Key())
 		if err != nil {
 			return nil, fmt.Errorf("error encoding key: %w", err)
 		}
-		key, ok := encoded.(string)
-		if !ok {
-			return nil, fmt.Errorf("%w key %q, kind: %v", errNonStringEncodedKey, iterator.Key().Interface(), iterator.Key().Kind())
+
+		v := reflect.ValueOf(encoded)
+		var key string
+
+		switch v.Kind() {
+		case reflect.String:
+			key = v.String()
+		default:
+			return nil, fmt.Errorf("%w, key: %q, kind: %v, type: %T", errNonStringEncodedKey, iterator.Key().Interface(), iterator.Key().Kind(), encoded)
 		}
-		if _, ok = result[key]; ok {
+
+		if _, ok := result[key]; ok {
 			return nil, fmt.Errorf("duplicate key %q while encoding", key)
 		}
 		if result[key], err = e.encode(iterator.Value()); err != nil {
@@ -220,7 +215,7 @@ func getTagInfo(field reflect.StructField) *tagInfo {
 // for the encoding.TextMarshaler interface and calls the MarshalText
 // function if found.
 func TextMarshalerHookFunc() mapstructure.DecodeHookFuncValue {
-	return func(from reflect.Value, _ reflect.Value) (interface{}, error) {
+	return func(from reflect.Value, _ reflect.Value) (any, error) {
 		marshaler, ok := from.Interface().(encoding.TextMarshaler)
 		if !ok {
 			return from.Interface(), nil
@@ -230,5 +225,37 @@ func TextMarshalerHookFunc() mapstructure.DecodeHookFuncValue {
 			return nil, err
 		}
 		return string(out), nil
+	}
+}
+
+// YamlMarshalerHookFunc returns a DecodeHookFuncValue that checks for structs
+// that have yaml tags but no mapstructure tags. If found, it will convert the struct
+// to map[string]any using the yaml package, which respects the yaml tags. Ultimately,
+// this allows mapstructure to later marshal the map[string]any in a generic way.
+func YamlMarshalerHookFunc() mapstructure.DecodeHookFuncValue {
+	return func(from reflect.Value, _ reflect.Value) (any, error) {
+		if from.Kind() == reflect.Struct {
+			for i := 0; i < from.NumField(); i++ {
+				if _, ok := from.Type().Field(i).Tag.Lookup("mapstructure"); ok {
+					// The struct has at least one mapstructure tag so don't do anything.
+					return from.Interface(), nil
+				}
+
+				if _, ok := from.Type().Field(i).Tag.Lookup("yaml"); ok {
+					// The struct has at least one yaml tag, so convert it to map[string]any using yaml.
+					yamlBytes, err := yaml.Marshal(from.Interface())
+					if err != nil {
+						return nil, err
+					}
+					var m map[string]any
+					err = yaml.Unmarshal(yamlBytes, &m)
+					if err != nil {
+						return nil, err
+					}
+					return m, nil
+				}
+			}
+		}
+		return from.Interface(), nil
 	}
 }

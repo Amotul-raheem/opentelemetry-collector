@@ -1,28 +1,18 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package pmetric
 
 import (
 	"testing"
+	"time"
 
 	gogoproto "github.com/gogo/protobuf/proto"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	goproto "google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	"go.opentelemetry.io/collector/pdata/internal"
 	otlpcollectormetrics "go.opentelemetry.io/collector/pdata/internal/data/protogen/collector/metrics/v1"
 	otlpcommon "go.opentelemetry.io/collector/pdata/internal/data/protogen/common/v1"
 	otlpmetrics "go.opentelemetry.io/collector/pdata/internal/data/protogen/metrics/v1"
@@ -35,37 +25,6 @@ const (
 	endTime   = uint64(12578940000000054321)
 )
 
-func TestMetricTypeString(t *testing.T) {
-	assert.Equal(t, "Empty", MetricTypeEmpty.String())
-	assert.Equal(t, "Gauge", MetricTypeGauge.String())
-	assert.Equal(t, "Sum", MetricTypeSum.String())
-	assert.Equal(t, "Histogram", MetricTypeHistogram.String())
-	assert.Equal(t, "ExponentialHistogram", MetricTypeExponentialHistogram.String())
-	assert.Equal(t, "Summary", MetricTypeSummary.String())
-	assert.Equal(t, "", (MetricTypeSummary + 1).String())
-}
-
-func TestAggregationTemporalityString(t *testing.T) {
-	assert.Equal(t, "Unspecified", AggregationTemporalityUnspecified.String())
-	assert.Equal(t, "Delta", AggregationTemporalityDelta.String())
-	assert.Equal(t, "Cumulative", AggregationTemporalityCumulative.String())
-	assert.Equal(t, "", (AggregationTemporalityCumulative + 1).String())
-}
-
-func TestNumberDataPointValueTypeString(t *testing.T) {
-	assert.Equal(t, "Empty", NumberDataPointValueTypeEmpty.String())
-	assert.Equal(t, "Int", NumberDataPointValueTypeInt.String())
-	assert.Equal(t, "Double", NumberDataPointValueTypeDouble.String())
-	assert.Equal(t, "", (NumberDataPointValueTypeDouble + 1).String())
-}
-
-func TestExemplarValueTypeString(t *testing.T) {
-	assert.Equal(t, "Empty", ExemplarValueTypeEmpty.String())
-	assert.Equal(t, "Int", ExemplarValueTypeInt.String())
-	assert.Equal(t, "Double", ExemplarValueTypeDouble.String())
-	assert.Equal(t, "", (ExemplarValueTypeDouble + 1).String())
-}
-
 func TestResourceMetricsWireCompatibility(t *testing.T) {
 	// This test verifies that OTLP ProtoBufs generated using goproto lib in
 	// opentelemetry-proto repository OTLP ProtoBufs generated using gogoproto lib in
@@ -73,27 +32,27 @@ func TestResourceMetricsWireCompatibility(t *testing.T) {
 
 	// Generate ResourceMetrics as pdata struct.
 	metrics := NewMetrics()
-	internal.FillTestResourceMetricsSlice(internal.ResourceMetricsSlice(metrics.ResourceMetrics()))
+	fillTestResourceMetricsSlice(metrics.ResourceMetrics())
 
 	// Marshal its underlying ProtoBuf to wire.
 	wire1, err := gogoproto.Marshal(metrics.getOrig())
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, wire1)
 
 	// Unmarshal from the wire to OTLP Protobuf in goproto's representation.
 	var goprotoMessage emptypb.Empty
 	err = goproto.Unmarshal(wire1, &goprotoMessage)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Marshal to the wire again.
 	wire2, err := goproto.Marshal(&goprotoMessage)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, wire2)
 
 	// Unmarshal from the wire into gogoproto's representation.
 	var gogoprotoRM otlpcollectormetrics.ExportMetricsServiceRequest
 	err = gogoproto.Unmarshal(wire2, &gogoprotoRM)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Now compare that the original and final ProtoBuf messages are the same.
 	// This proves that goproto and gogoproto marshaling/unmarshaling are wire compatible.
@@ -225,15 +184,6 @@ func TestHistogramWithValidSum(t *testing.T) {
 	assert.EqualValues(t, histo, dest)
 }
 
-func TestMetricsMoveTo(t *testing.T) {
-	metrics := NewMetrics()
-	internal.FillTestResourceMetricsSlice(internal.ResourceMetricsSlice(metrics.ResourceMetrics()))
-	dest := NewMetrics()
-	metrics.MoveTo(dest)
-	assert.EqualValues(t, NewMetrics(), metrics)
-	assert.EqualValues(t, ResourceMetricsSlice(internal.GenerateTestResourceMetricsSlice()), dest.ResourceMetrics())
-}
-
 func TestOtlpToInternalReadOnly(t *testing.T) {
 	md := newMetrics(&otlpcollectormetrics.ExportMetricsServiceRequest{
 		ResourceMetrics: []*otlpmetrics.ResourceMetrics{
@@ -252,7 +202,7 @@ func TestOtlpToInternalReadOnly(t *testing.T) {
 	assert.EqualValues(t, 1, resourceMetrics.Len())
 
 	resourceMetric := resourceMetrics.At(0)
-	assert.EqualValues(t, map[string]interface{}{
+	assert.EqualValues(t, map[string]any{
 		"string": "string-resource",
 	}, resourceMetric.Resource().Attributes().AsRaw())
 	metrics := resourceMetric.ScopeMetrics().At(0).Metrics()
@@ -269,13 +219,13 @@ func TestOtlpToInternalReadOnly(t *testing.T) {
 	// First point
 	assert.EqualValues(t, startTime, gaugeDataPoints.At(0).StartTimestamp())
 	assert.EqualValues(t, endTime, gaugeDataPoints.At(0).Timestamp())
-	assert.EqualValues(t, 123.1, gaugeDataPoints.At(0).DoubleValue())
-	assert.EqualValues(t, map[string]interface{}{"key0": "value0"}, gaugeDataPoints.At(0).Attributes().AsRaw())
+	assert.InDelta(t, 123.1, gaugeDataPoints.At(0).DoubleValue(), 0.01)
+	assert.EqualValues(t, map[string]any{"key0": "value0"}, gaugeDataPoints.At(0).Attributes().AsRaw())
 	// Second point
 	assert.EqualValues(t, startTime, gaugeDataPoints.At(1).StartTimestamp())
 	assert.EqualValues(t, endTime, gaugeDataPoints.At(1).Timestamp())
-	assert.EqualValues(t, 456.1, gaugeDataPoints.At(1).DoubleValue())
-	assert.EqualValues(t, map[string]interface{}{"key1": "value1"}, gaugeDataPoints.At(1).Attributes().AsRaw())
+	assert.InDelta(t, 456.1, gaugeDataPoints.At(1).DoubleValue(), 0.01)
+	assert.EqualValues(t, map[string]any{"key1": "value1"}, gaugeDataPoints.At(1).Attributes().AsRaw())
 
 	// Check double metric
 	metricDouble := metrics.At(1)
@@ -290,13 +240,13 @@ func TestOtlpToInternalReadOnly(t *testing.T) {
 	// First point
 	assert.EqualValues(t, startTime, sumDataPoints.At(0).StartTimestamp())
 	assert.EqualValues(t, endTime, sumDataPoints.At(0).Timestamp())
-	assert.EqualValues(t, 123.1, sumDataPoints.At(0).DoubleValue())
-	assert.EqualValues(t, map[string]interface{}{"key0": "value0"}, sumDataPoints.At(0).Attributes().AsRaw())
+	assert.InDelta(t, 123.1, sumDataPoints.At(0).DoubleValue(), 0.01)
+	assert.EqualValues(t, map[string]any{"key0": "value0"}, sumDataPoints.At(0).Attributes().AsRaw())
 	// Second point
 	assert.EqualValues(t, startTime, sumDataPoints.At(1).StartTimestamp())
 	assert.EqualValues(t, endTime, sumDataPoints.At(1).Timestamp())
-	assert.EqualValues(t, 456.1, sumDataPoints.At(1).DoubleValue())
-	assert.EqualValues(t, map[string]interface{}{"key1": "value1"}, sumDataPoints.At(1).Attributes().AsRaw())
+	assert.InDelta(t, 456.1, sumDataPoints.At(1).DoubleValue(), 0.01)
+	assert.EqualValues(t, map[string]any{"key1": "value1"}, sumDataPoints.At(1).Attributes().AsRaw())
 
 	// Check histogram metric
 	metricHistogram := metrics.At(2)
@@ -312,13 +262,13 @@ func TestOtlpToInternalReadOnly(t *testing.T) {
 	assert.EqualValues(t, startTime, histogramDataPoints.At(0).StartTimestamp())
 	assert.EqualValues(t, endTime, histogramDataPoints.At(0).Timestamp())
 	assert.EqualValues(t, []float64{1, 2}, histogramDataPoints.At(0).ExplicitBounds().AsRaw())
-	assert.EqualValues(t, map[string]interface{}{"key0": "value0"}, histogramDataPoints.At(0).Attributes().AsRaw())
+	assert.EqualValues(t, map[string]any{"key0": "value0"}, histogramDataPoints.At(0).Attributes().AsRaw())
 	assert.EqualValues(t, []uint64{10, 15, 1}, histogramDataPoints.At(0).BucketCounts().AsRaw())
 	// Second point
 	assert.EqualValues(t, startTime, histogramDataPoints.At(1).StartTimestamp())
 	assert.EqualValues(t, endTime, histogramDataPoints.At(1).Timestamp())
 	assert.EqualValues(t, []float64{1}, histogramDataPoints.At(1).ExplicitBounds().AsRaw())
-	assert.EqualValues(t, map[string]interface{}{"key1": "value1"}, histogramDataPoints.At(1).Attributes().AsRaw())
+	assert.EqualValues(t, map[string]any{"key1": "value1"}, histogramDataPoints.At(1).Attributes().AsRaw())
 	assert.EqualValues(t, []uint64{10, 1}, histogramDataPoints.At(1).BucketCounts().AsRaw())
 }
 
@@ -353,7 +303,7 @@ func TestOtlpToFromInternalReadOnly(t *testing.T) {
 }
 
 func TestOtlpToFromInternalGaugeMutating(t *testing.T) {
-	newAttributes := map[string]interface{}{"k": "v"}
+	newAttributes := map[string]any{"k": "v"}
 
 	md := newMetrics(&otlpcollectormetrics.ExportMetricsServiceRequest{
 		ResourceMetrics: []*otlpmetrics.ResourceMetrics{
@@ -388,7 +338,7 @@ func TestOtlpToFromInternalGaugeMutating(t *testing.T) {
 	gaugeDataPoints.At(0).SetTimestamp(pcommon.Timestamp(endTime + 1))
 	assert.EqualValues(t, endTime+1, gaugeDataPoints.At(0).Timestamp())
 	gaugeDataPoints.At(0).SetDoubleValue(124.1)
-	assert.EqualValues(t, 124.1, gaugeDataPoints.At(0).DoubleValue())
+	assert.InDelta(t, 124.1, gaugeDataPoints.At(0).DoubleValue(), 0.01)
 	gaugeDataPoints.At(0).Attributes().Remove("key0")
 	gaugeDataPoints.At(0).Attributes().PutStr("k", "v")
 	assert.EqualValues(t, newAttributes, gaugeDataPoints.At(0).Attributes().AsRaw())
@@ -435,7 +385,7 @@ func TestOtlpToFromInternalGaugeMutating(t *testing.T) {
 }
 
 func TestOtlpToFromInternalSumMutating(t *testing.T) {
-	newAttributes := map[string]interface{}{"k": "v"}
+	newAttributes := map[string]any{"k": "v"}
 
 	md := newMetrics(&otlpcollectormetrics.ExportMetricsServiceRequest{
 		ResourceMetrics: []*otlpmetrics.ResourceMetrics{
@@ -471,7 +421,7 @@ func TestOtlpToFromInternalSumMutating(t *testing.T) {
 	doubleDataPoints.At(0).SetTimestamp(pcommon.Timestamp(endTime + 1))
 	assert.EqualValues(t, endTime+1, doubleDataPoints.At(0).Timestamp())
 	doubleDataPoints.At(0).SetDoubleValue(124.1)
-	assert.EqualValues(t, 124.1, doubleDataPoints.At(0).DoubleValue())
+	assert.InDelta(t, 124.1, doubleDataPoints.At(0).DoubleValue(), 0.01)
 	doubleDataPoints.At(0).Attributes().Remove("key0")
 	doubleDataPoints.At(0).Attributes().PutStr("k", "v")
 	assert.EqualValues(t, newAttributes, doubleDataPoints.At(0).Attributes().AsRaw())
@@ -519,7 +469,7 @@ func TestOtlpToFromInternalSumMutating(t *testing.T) {
 }
 
 func TestOtlpToFromInternalHistogramMutating(t *testing.T) {
-	newAttributes := map[string]interface{}{"k": "v"}
+	newAttributes := map[string]any{"k": "v"}
 
 	md := newMetrics(&otlpcollectormetrics.ExportMetricsServiceRequest{
 		ResourceMetrics: []*otlpmetrics.ResourceMetrics{
@@ -602,7 +552,7 @@ func TestOtlpToFromInternalHistogramMutating(t *testing.T) {
 }
 
 func TestOtlpToFromInternalExponentialHistogramMutating(t *testing.T) {
-	newAttributes := map[string]interface{}{"k": "v"}
+	newAttributes := map[string]any{"k": "v"}
 
 	md := newMetrics(&otlpcollectormetrics.ExportMetricsServiceRequest{
 		ResourceMetrics: []*otlpmetrics.ResourceMetrics{
@@ -681,10 +631,20 @@ func TestOtlpToFromInternalExponentialHistogramMutating(t *testing.T) {
 
 func TestMetricsCopyTo(t *testing.T) {
 	metrics := NewMetrics()
-	internal.FillTestResourceMetricsSlice(internal.ResourceMetricsSlice(metrics.ResourceMetrics()))
+	fillTestResourceMetricsSlice(metrics.ResourceMetrics())
 	metricsCopy := NewMetrics()
 	metrics.CopyTo(metricsCopy)
 	assert.EqualValues(t, metrics, metricsCopy)
+}
+
+func TestReadOnlyMetricsInvalidUsage(t *testing.T) {
+	metrics := NewMetrics()
+	assert.False(t, metrics.IsReadOnly())
+	res := metrics.ResourceMetrics().AppendEmpty().Resource()
+	res.Attributes().PutStr("k1", "v1")
+	metrics.MarkReadOnly()
+	assert.True(t, metrics.IsReadOnly())
+	assert.Panics(t, func() { res.Attributes().PutStr("k2", "v2") })
 }
 
 func BenchmarkOtlpToFromInternal_PassThrough(b *testing.B) {
@@ -850,6 +810,7 @@ func generateTestProtoGaugeMetric() *otlpmetrics.Metric {
 		},
 	}
 }
+
 func generateTestProtoSumMetric() *otlpmetrics.Metric {
 	return &otlpmetrics.Metric{
 		Name:        "my_metric_double",
@@ -982,4 +943,58 @@ func generateMetricsEmptyDataPoints() Metrics {
 			},
 		},
 	})
+}
+
+func BenchmarkMetricsUsage(b *testing.B) {
+	metrics := NewMetrics()
+	fillTestResourceMetricsSlice(metrics.ResourceMetrics())
+
+	ts := pcommon.NewTimestampFromTime(time.Now())
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for bb := 0; bb < b.N; bb++ {
+		for i := 0; i < metrics.ResourceMetrics().Len(); i++ {
+			rm := metrics.ResourceMetrics().At(i)
+			res := rm.Resource()
+			res.Attributes().PutStr("foo", "bar")
+			v, ok := res.Attributes().Get("foo")
+			assert.True(b, ok)
+			assert.Equal(b, "bar", v.Str())
+			v.SetStr("new-bar")
+			assert.Equal(b, "new-bar", v.Str())
+			res.Attributes().Remove("foo")
+			for j := 0; j < rm.ScopeMetrics().Len(); j++ {
+				sm := rm.ScopeMetrics().At(j)
+				for k := 0; k < sm.Metrics().Len(); k++ {
+					m := sm.Metrics().At(k)
+					m.SetName("new_metric_name")
+					assert.Equal(b, "new_metric_name", m.Name())
+					assert.Equal(b, MetricTypeSum, m.Type())
+					m.Sum().SetAggregationTemporality(AggregationTemporalityCumulative)
+					assert.Equal(b, AggregationTemporalityCumulative, m.Sum().AggregationTemporality())
+					m.Sum().SetIsMonotonic(true)
+					assert.True(b, m.Sum().IsMonotonic())
+					for l := 0; l < m.Sum().DataPoints().Len(); l++ {
+						dp := m.Sum().DataPoints().At(l)
+						dp.SetIntValue(123)
+						assert.Equal(b, int64(123), dp.IntValue())
+						assert.Equal(b, NumberDataPointValueTypeInt, dp.ValueType())
+						dp.SetStartTimestamp(ts)
+						assert.Equal(b, ts, dp.StartTimestamp())
+					}
+					dp := m.Sum().DataPoints().AppendEmpty()
+					dp.Attributes().PutStr("foo", "bar")
+					dp.SetDoubleValue(123)
+					dp.SetStartTimestamp(ts)
+					dp.SetTimestamp(ts)
+					m.Sum().DataPoints().RemoveIf(func(dp NumberDataPoint) bool {
+						_, ok := dp.Attributes().Get("foo")
+						return ok
+					})
+				}
+			}
+		}
+	}
 }

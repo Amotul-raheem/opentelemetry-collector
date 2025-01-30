@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package zpagesextension
 
@@ -27,7 +16,8 @@ import (
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
-	"go.opentelemetry.io/collector/config/confignet"
+	"go.opentelemetry.io/collector/config/configauth"
+	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/internal/testutil"
 )
 
@@ -39,10 +29,12 @@ func newZPagesHost() *zpagesHost {
 	return &zpagesHost{Host: componenttest.NewNopHost()}
 }
 
-func (*zpagesHost) RegisterZPages(mux *http.ServeMux, pathPrefix string) {}
+func (*zpagesHost) RegisterZPages(*http.ServeMux, string) {}
 
-var _ registerableTracerProvider = (*registerableProvider)(nil)
-var _ registerableTracerProvider = sdktrace.NewTracerProvider()
+var (
+	_ registerableTracerProvider = (*registerableProvider)(nil)
+	_ registerableTracerProvider = sdktrace.NewTracerProvider()
+)
 
 type registerableProvider struct {
 	trace.TracerProvider
@@ -59,7 +51,7 @@ func newZpagesTelemetrySettings() component.TelemetrySettings {
 
 func TestZPagesExtensionUsage(t *testing.T) {
 	cfg := &Config{
-		TCPAddr: confignet.TCPAddr{
+		confighttp.ServerConfig{
 			Endpoint: testutil.GetAvailableLocalAddress(t),
 		},
 	}
@@ -73,7 +65,7 @@ func TestZPagesExtensionUsage(t *testing.T) {
 	// Give a chance for the server goroutine to run.
 	runtime.Gosched()
 
-	_, zpagesPort, err := net.SplitHostPort(cfg.TCPAddr.Endpoint)
+	_, zpagesPort, err := net.SplitHostPort(cfg.ServerConfig.Endpoint)
 	require.NoError(t, err)
 
 	client := &http.Client{}
@@ -84,6 +76,21 @@ func TestZPagesExtensionUsage(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
+func TestZPagesExtensionBadAuthExtension(t *testing.T) {
+	cfg := &Config{
+		confighttp.ServerConfig{
+			Endpoint: "localhost:0",
+			Auth: &confighttp.AuthConfig{
+				Authentication: configauth.Authentication{
+					AuthenticatorID: component.MustNewIDWithName("foo", "bar"),
+				},
+			},
+		},
+	}
+	zpagesExt := newServer(cfg, newZpagesTelemetrySettings())
+	require.EqualError(t, zpagesExt.Start(context.Background(), componenttest.NewNopHost()), `failed to resolve authenticator "foo/bar": authenticator not found`)
+}
+
 func TestZPagesExtensionPortAlreadyInUse(t *testing.T) {
 	endpoint := testutil.GetAvailableLocalAddress(t)
 	ln, err := net.Listen("tcp", endpoint)
@@ -91,7 +98,7 @@ func TestZPagesExtensionPortAlreadyInUse(t *testing.T) {
 	defer ln.Close()
 
 	cfg := &Config{
-		TCPAddr: confignet.TCPAddr{
+		confighttp.ServerConfig{
 			Endpoint: endpoint,
 		},
 	}
@@ -103,7 +110,7 @@ func TestZPagesExtensionPortAlreadyInUse(t *testing.T) {
 
 func TestZPagesMultipleStarts(t *testing.T) {
 	cfg := &Config{
-		TCPAddr: confignet.TCPAddr{
+		confighttp.ServerConfig{
 			Endpoint: testutil.GetAvailableLocalAddress(t),
 		},
 	}
@@ -120,7 +127,7 @@ func TestZPagesMultipleStarts(t *testing.T) {
 
 func TestZPagesMultipleShutdowns(t *testing.T) {
 	cfg := &Config{
-		TCPAddr: confignet.TCPAddr{
+		confighttp.ServerConfig{
 			Endpoint: testutil.GetAvailableLocalAddress(t),
 		},
 	}
@@ -135,7 +142,7 @@ func TestZPagesMultipleShutdowns(t *testing.T) {
 
 func TestZPagesShutdownWithoutStart(t *testing.T) {
 	cfg := &Config{
-		TCPAddr: confignet.TCPAddr{
+		confighttp.ServerConfig{
 			Endpoint: testutil.GetAvailableLocalAddress(t),
 		},
 	}

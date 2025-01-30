@@ -26,6 +26,8 @@ protocols:
         min_time: 10s
         permit_without_stream: true
   http:
+    auth:
+      authenticator: test
     # The following entry demonstrates how to specify TLS credentials for the server.
     # Note: These files do not exist. If the receiver is started with this configuration, it will fail.
     tls:
@@ -39,3 +41,8 @@ protocols:
         - https://*.test.com # Wildcard subdomain. Allows domains like https://www.test.com and https://foo.test.com but not https://wwwtest.com.
         - https://test.com # Fully qualified domain name. Allows https://test.com only.
       max_age: 7200
+
+    # The following shows URL paths for endpoints where signals are listened for bt the OTLP receiver
+    traces_url_path: traces
+    metrics_url_path: /v2/metrics
+    logs_url_path: log/ingest

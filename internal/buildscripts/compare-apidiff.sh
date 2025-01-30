@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+#
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
 
 # This script is used to compare API state snapshots to the current package state in order to validate releases are not breaking backwards compatibility.
 
@@ -14,7 +17,7 @@ usage() {
 package=""
 input_dir="./internal/data/apidiff"
 check_only=false
-
+apidiff_cmd="$(git rev-parse --show-toplevel)/.tools/apidiff"
 
 while getopts "cp:d:" o; do
     case "${o}" in
@@ -34,15 +37,15 @@ while getopts "cp:d:" o; do
 done
 shift $((OPTIND-1))
 
-if [ -z $package ]; then
+if [ -z "$package" ]; then
   usage
 fi
 
 set -e
 
-if [ -e $input_dir/$package/apidiff.state ]; then
-  changes=$(apidiff $input_dir/$package/apidiff.state $package)
-  if [ ! -z "$changes" -a "$changes"!=" " ]; then
+if [ -e "$input_dir"/"$package"/apidiff.state ]; then
+  changes=$(${apidiff_cmd} "$input_dir"/"$package"/apidiff.state "$package")
+  if [ -n "$changes" ] && [ "$changes" != " " ]; then
     SUB='Incompatible changes:'
     if [ $check_only = true ] && [[ "$changes" =~ .*"$SUB".* ]]; then
       echo "Incompatible Changes Found."

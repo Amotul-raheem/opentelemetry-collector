@@ -1,70 +1,63 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package configtelemetry
 
 import (
+	"encoding"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+var (
+	_ encoding.TextMarshaler   = (*Level)(nil)
+	_ encoding.TextUnmarshaler = (*Level)(nil)
 )
 
 func TestUnmarshalText(t *testing.T) {
 	tests := []struct {
-		str   string
+		str   []string
 		level Level
 		err   bool
 	}{
 		{
-			str:   "",
+			str:   []string{"", "other_string"},
 			level: LevelNone,
 			err:   true,
 		},
 		{
-			str:   "other_string",
-			level: LevelNone,
-			err:   true,
-		},
-		{
-			str:   levelNoneStr,
+			str:   []string{"none", "None", "NONE"},
 			level: LevelNone,
 		},
 		{
-			str:   levelBasicStr,
+			str:   []string{"basic", "Basic", "BASIC"},
 			level: LevelBasic,
 		},
 		{
-			str:   levelNormalStr,
+			str:   []string{"normal", "Normal", "NORMAL"},
 			level: LevelNormal,
 		},
 		{
-			str:   levelDetailedStr,
+			str:   []string{"detailed", "Detailed", "DETAILED"},
 			level: LevelDetailed,
 		},
 	}
 
 	for _, test := range tests {
-		t.Run(test.str, func(t *testing.T) {
-			var lvl Level
-			err := lvl.UnmarshalText([]byte(test.str))
-			if test.err {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, test.level, lvl)
-			}
-		})
+		for _, str := range test.str {
+			t.Run(str, func(t *testing.T) {
+				var lvl Level
+				err := lvl.UnmarshalText([]byte(str))
+				if test.err {
+					assert.Error(t, err)
+				} else {
+					require.NoError(t, err)
+					assert.Equal(t, test.level, lvl)
+				}
+			})
+		}
 	}
 }
 
@@ -73,14 +66,14 @@ func TestUnmarshalTextNilLevel(t *testing.T) {
 	assert.Error(t, lvl.UnmarshalText([]byte(levelNormalStr)))
 }
 
-func TestLevelString(t *testing.T) {
+func TestLevelStringMarshal(t *testing.T) {
 	tests := []struct {
 		str   string
 		level Level
 		err   bool
 	}{
 		{
-			str:   "unknown",
+			str:   "",
 			level: Level(-10),
 		},
 		{
@@ -100,12 +93,12 @@ func TestLevelString(t *testing.T) {
 			level: LevelDetailed,
 		},
 	}
-	for _, test := range tests {
-		t.Run(test.str, func(t *testing.T) {
-			assert.Equal(t, test.str, test.level.String())
-			got, err := test.level.MarshalText()
-			assert.NoError(t, err)
-			assert.Equal(t, test.str, string(got))
+	for _, tt := range tests {
+		t.Run(tt.str, func(t *testing.T) {
+			assert.Equal(t, tt.str, tt.level.String())
+			got, err := tt.level.MarshalText()
+			require.NoError(t, err)
+			assert.Equal(t, tt.str, string(got))
 		})
 	}
 }

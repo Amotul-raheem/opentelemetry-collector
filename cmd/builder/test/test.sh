@@ -1,9 +1,17 @@
 #!/bin/bash
+#
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+WORKSPACE_DIR=$( cd -- "$( dirname "$(dirname "$(dirname -- "${SCRIPT_DIR}")")" )" &> /dev/null && pwd )
+export WORKSPACE_DIR
 
 GOBIN=$(go env GOBIN)
 if [[ "$GO" == "" ]]; then
     GOBIN=$(which go)
 fi
+export GOBIN
 
 if [[ "$GOBIN" == "" ]]; then
     echo "Could not determine which Go binary to use."
@@ -17,25 +25,24 @@ test_build_config() {
     local build_config="$2"
 
     out="${base}/${test}"
-    mkdir -p "${out}"
-    if [ $? != 0 ]; then
+    if ! mkdir -p "${out}"; then
         echo "❌ FAIL ${test}. Failed to create test directory for the test. Aborting tests."
         exit 2
     fi
 
-    echo "Starting test '${test}' at `date`" >> "${out}/test.log"
+    echo "Starting test '${test}' at $(date)" >> "${out}/test.log"
 
-    go run . --go "${GOBIN}" --config "$build_config" --output-path "${out}" --name otelcol-built-test > "${out}/builder.log" 2>&1
-
-    if [ $? != 0 ]; then
+    final_build_config=$(basename "${build_config}")
+    "${WORKSPACE_DIR}/.tools/envsubst" -o "${out}/${final_build_config}" -i <(cat "$build_config" "$replaces")
+    if ! go run . --config "${out}/${final_build_config}" --output-path "${out}" > "${out}/builder.log" 2>&1; then
         echo "❌ FAIL ${test}. Failed to compile the test ${test}. Build logs:"
         cat "${out}/builder.log"
         failed=true
         return
     fi
 
-    if [ ! -f "${out}/otelcol-built-test" ]; then
-        echo "❌ FAIL ${test}. Binary not found for ${test} at '${out}/otelcol-built-test'. Build logs:"
+    if [ ! -f "${out}/${test}" ]; then
+        echo "❌ FAIL ${test}. Binary not found for ${test} at '${out}/${test}'. Build logs:"
         cat "${out}/builder.log"
         failed=true
         return
@@ -48,14 +55,13 @@ test_build_config() {
         return
     fi
 
-    "${out}/otelcol-built-test" --config "./test/${test}.otel.yaml" > "${out}/otelcol.log" 2>&1 &
+    "${out}/${test}" --config "./test/${test}.otel.yaml" > "${out}/otelcol.log" 2>&1 &
     pid=$!
 
     retries=0
     while true
     do
-        kill -0 "${pid}" >/dev/null 2>&1
-        if [ $? != 0 ]; then
+        if ! kill -0 "${pid}" >/dev/null 2>&1; then
             echo "❌ FAIL ${test}. The OpenTelemetry Collector isn't running. Startup log:"
             cat "${out}/otelcol.log"
             failed=true
@@ -65,13 +71,13 @@ test_build_config() {
         # Since the content of the servicez page depend on which extensions are
         # built into the collector, we depend only on the zpages extension
         # being present and serving something.
-        curl --fail --silent --output /dev/null http://localhost:55679/debug/servicez
-        if [ $? == 0 ]; then
+        if curl --fail --silent --output /dev/null http://localhost:55679/debug/servicez; then
             echo "✅ PASS ${test}"
 
             kill "${pid}"
-            if [ $? != 0 ]; then
-                echo "Failed to stop the running instance for test ${test}. Return code: $? . Skipping tests."
+            ret=$?
+            if [ $ret -ne 0 ]; then
+                echo "Failed to stop the running instance for test ${test}. Return code: ${ret} . Skipping tests."
                 exit 4
             fi
             break
@@ -79,14 +85,15 @@ test_build_config() {
 
         echo "Server still unavailable for test '${test}'" >> "${out}/test.log"
 
-        let "retries++"
+        ((retries++))
         if [ "$retries" -gt "$max_retries" ]; then
             echo "❌ FAIL ${test}. Server wasn't up after about 5s."
             failed=true
 
             kill "${pid}"
-            if [ $? != 0 ]; then
-                echo "Failed to stop the running instance for test ${test}. Return code: $? . Skipping tests."
+            ret=$?
+            if [ $ret -ne 0 ]; then
+                echo "Failed to stop the running instance for test ${test}. Return code: ${ret} . Skipping tests."
                 exit 8
             fi
             break
@@ -103,8 +110,18 @@ max_retries=50
 
 tests="core"
 
-base=`mktemp -d`
+base=$(mktemp -d)
 echo "Running the tests in ${base}"
+
+replaces="$base/replaces"
+# Get path of all core modules, in sorted order
+core_mods=$(cd ../.. && find . -type f -name "go.mod" -exec dirname {} \; | sort)
+echo "replaces:" >> "$replaces"
+for mod_path in $core_mods; do
+    mod=${mod_path#"."} # remove initial dot
+    echo "  - go.opentelemetry.io/collector$mod => \${WORKSPACE_DIR}$mod" >> "$replaces"
+done
+echo "Wrote replace statements to $replaces"
 
 failed=false
 

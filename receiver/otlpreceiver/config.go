@@ -1,23 +1,15 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package otlpreceiver // import "go.opentelemetry.io/collector/receiver/otlpreceiver"
 
 import (
 	"errors"
+	"fmt"
+	"net/url"
+	"path"
 
-	"go.opentelemetry.io/collector/config"
+	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/confmap"
@@ -25,60 +17,88 @@ import (
 
 const (
 	// Protocol values.
-	protoGRPC          = "grpc"
-	protoHTTP          = "http"
-	protocolsFieldName = "protocols"
+	protoGRPC = "protocols::grpc"
+	protoHTTP = "protocols::http"
 )
+
+type HTTPConfig struct {
+	*confighttp.ServerConfig `mapstructure:",squash"`
+
+	// The URL path to receive traces on. If omitted "/v1/traces" will be used.
+	TracesURLPath string `mapstructure:"traces_url_path,omitempty"`
+
+	// The URL path to receive metrics on. If omitted "/v1/metrics" will be used.
+	MetricsURLPath string `mapstructure:"metrics_url_path,omitempty"`
+
+	// The URL path to receive logs on. If omitted "/v1/logs" will be used.
+	LogsURLPath string `mapstructure:"logs_url_path,omitempty"`
+}
 
 // Protocols is the configuration for the supported protocols.
 type Protocols struct {
-	GRPC *configgrpc.GRPCServerSettings `mapstructure:"grpc"`
-	HTTP *confighttp.HTTPServerSettings `mapstructure:"http"`
+	GRPC *configgrpc.ServerConfig `mapstructure:"grpc"`
+	HTTP *HTTPConfig              `mapstructure:"http"`
 }
 
 // Config defines configuration for OTLP receiver.
 type Config struct {
-	config.ReceiverSettings `mapstructure:",squash"` // squash ensures fields are correctly decoded in embedded struct
 	// Protocols is the configuration for the supported protocols, currently gRPC and HTTP (Proto and JSON).
 	Protocols `mapstructure:"protocols"`
 }
 
-var _ config.Receiver = (*Config)(nil)
-var _ confmap.Unmarshaler = (*Config)(nil)
+var (
+	_ component.Config    = (*Config)(nil)
+	_ confmap.Unmarshaler = (*Config)(nil)
+)
 
 // Validate checks the receiver configuration is valid
 func (cfg *Config) Validate() error {
-	if cfg.GRPC == nil &&
-		cfg.HTTP == nil {
+	if cfg.GRPC == nil && cfg.HTTP == nil {
 		return errors.New("must specify at least one protocol when using the OTLP receiver")
 	}
 	return nil
 }
 
 // Unmarshal a confmap.Conf into the config struct.
-func (cfg *Config) Unmarshal(componentParser *confmap.Conf) error {
-	if componentParser == nil || len(componentParser.AllKeys()) == 0 {
-		return errors.New("empty config for OTLP receiver")
-	}
+func (cfg *Config) Unmarshal(conf *confmap.Conf) error {
 	// first load the config normally
-	err := componentParser.Unmarshal(cfg, confmap.WithErrorUnused())
+	err := conf.Unmarshal(cfg)
 	if err != nil {
 		return err
 	}
 
-	// next manually search for protocols in the confmap.Conf, if a protocol is not present it means it is disabled.
-	protocols, err := componentParser.Sub(protocolsFieldName)
-	if err != nil {
-		return err
-	}
-
-	if !protocols.IsSet(protoGRPC) {
+	if !conf.IsSet(protoGRPC) {
 		cfg.GRPC = nil
 	}
 
-	if !protocols.IsSet(protoHTTP) {
+	if !conf.IsSet(protoHTTP) {
 		cfg.HTTP = nil
+	} else {
+		var err error
+
+		if cfg.HTTP.TracesURLPath, err = sanitizeURLPath(cfg.HTTP.TracesURLPath); err != nil {
+			return err
+		}
+		if cfg.HTTP.MetricsURLPath, err = sanitizeURLPath(cfg.HTTP.MetricsURLPath); err != nil {
+			return err
+		}
+		if cfg.HTTP.LogsURLPath, err = sanitizeURLPath(cfg.HTTP.LogsURLPath); err != nil {
+			return err
+		}
 	}
 
 	return nil
+}
+
+// Verify signal URL path sanity
+func sanitizeURLPath(urlPath string) (string, error) {
+	u, err := url.Parse(urlPath)
+	if err != nil {
+		return "", fmt.Errorf("invalid HTTP URL path set for signal: %w", err)
+	}
+
+	if !path.IsAbs(u.Path) {
+		u.Path = "/" + u.Path
+	}
+	return u.Path, nil
 }

@@ -1,33 +1,53 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package otlphttpexporter // import "go.opentelemetry.io/collector/exporter/otlphttpexporter"
 
 import (
+	"encoding"
 	"errors"
+	"fmt"
 
-	"go.opentelemetry.io/collector/config"
+	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/confighttp"
+	"go.opentelemetry.io/collector/config/configretry"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
 )
 
+// EncodingType defines the type for content encoding
+type EncodingType string
+
+const (
+	EncodingProto EncodingType = "proto"
+	EncodingJSON  EncodingType = "json"
+)
+
+var _ encoding.TextUnmarshaler = (*EncodingType)(nil)
+
+// UnmarshalText unmarshalls text to an EncodingType.
+func (e *EncodingType) UnmarshalText(text []byte) error {
+	if e == nil {
+		return errors.New("cannot unmarshal to a nil *EncodingType")
+	}
+
+	str := string(text)
+	switch str {
+	case string(EncodingProto):
+		*e = EncodingProto
+	case string(EncodingJSON):
+		*e = EncodingJSON
+	default:
+		return fmt.Errorf("invalid encoding type: %s", str)
+	}
+
+	return nil
+}
+
 // Config defines configuration for OTLP/HTTP exporter.
 type Config struct {
-	config.ExporterSettings       `mapstructure:",squash"` // squash ensures fields are correctly decoded in embedded struct
-	confighttp.HTTPClientSettings `mapstructure:",squash"` // squash ensures fields are correctly decoded in embedded struct.
-	exporterhelper.QueueSettings  `mapstructure:"sending_queue"`
-	exporterhelper.RetrySettings  `mapstructure:"retry_on_failure"`
+	confighttp.ClientConfig    `mapstructure:",squash"` // squash ensures fields are correctly decoded in embedded struct.
+	exporterhelper.QueueConfig `mapstructure:"sending_queue"`
+	RetryConfig                configretry.BackOffConfig `mapstructure:"retry_on_failure"`
 
 	// The URL to send traces to. If omitted the Endpoint + "/v1/traces" will be used.
 	TracesEndpoint string `mapstructure:"traces_endpoint"`
@@ -37,9 +57,12 @@ type Config struct {
 
 	// The URL to send logs to. If omitted the Endpoint + "/v1/logs" will be used.
 	LogsEndpoint string `mapstructure:"logs_endpoint"`
+
+	// The encoding to export telemetry (default: "proto")
+	Encoding EncodingType `mapstructure:"encoding"`
 }
 
-var _ config.Exporter = (*Config)(nil)
+var _ component.Config = (*Config)(nil)
 
 // Validate checks if the exporter configuration is valid
 func (cfg *Config) Validate() error {

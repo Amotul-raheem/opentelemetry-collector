@@ -1,21 +1,9 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package configtelemetry // import "go.opentelemetry.io/collector/config/configtelemetry"
 
 import (
-	"encoding"
 	"errors"
 	"fmt"
 	"strings"
@@ -31,18 +19,15 @@ const (
 	// LevelDetailed adds dimensions and views to the previous levels.
 	LevelDetailed
 
-	levelNoneStr     = "none"
-	levelBasicStr    = "basic"
-	levelNormalStr   = "normal"
-	levelDetailedStr = "detailed"
+	levelNoneStr     = "None"
+	levelBasicStr    = "Basic"
+	levelNormalStr   = "Normal"
+	levelDetailedStr = "Detailed"
 )
 
 // Level is the level of internal telemetry (metrics, logs, traces about the component itself)
 // that every component should generate.
 type Level int32
-
-var _ encoding.TextMarshaler = (*Level)(nil)
-var _ encoding.TextUnmarshaler = (*Level)(nil)
 
 func (l Level) String() string {
 	switch l {
@@ -55,7 +40,7 @@ func (l Level) String() string {
 	case LevelDetailed:
 		return levelDetailedStr
 	}
-	return "unknown"
+	return ""
 }
 
 // MarshalText marshals Level to text.
@@ -71,16 +56,16 @@ func (l *Level) UnmarshalText(text []byte) error {
 
 	str := strings.ToLower(string(text))
 	switch str {
-	case levelNoneStr:
+	case strings.ToLower(levelNoneStr):
 		*l = LevelNone
 		return nil
-	case levelBasicStr:
+	case strings.ToLower(levelBasicStr):
 		*l = LevelBasic
 		return nil
-	case levelNormalStr:
+	case strings.ToLower(levelNormalStr):
 		*l = LevelNormal
 		return nil
-	case levelDetailedStr:
+	case strings.ToLower(levelDetailedStr):
 		*l = LevelDetailed
 		return nil
 	}

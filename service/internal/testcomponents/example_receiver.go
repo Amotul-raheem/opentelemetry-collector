@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package testcomponents // import "go.opentelemetry.io/collector/service/internal/testcomponents"
 
@@ -18,104 +7,102 @@ import (
 	"context"
 
 	"go.opentelemetry.io/collector/component"
-	"go.opentelemetry.io/collector/config"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/consumer/xconsumer"
+	"go.opentelemetry.io/collector/receiver"
+	"go.opentelemetry.io/collector/receiver/xreceiver"
 )
 
-const receiverType = config.Type("examplereceiver")
-
-// ExampleReceiverConfig config for ExampleReceiver.
-type ExampleReceiverConfig struct {
-	config.ReceiverSettings `mapstructure:",squash"` // squash ensures fields are correctly decoded in embedded struct
-}
+var receiverType = component.MustNewType("examplereceiver")
 
 // ExampleReceiverFactory is factory for ExampleReceiver.
-var ExampleReceiverFactory = component.NewReceiverFactory(
+var ExampleReceiverFactory = xreceiver.NewFactory(
 	receiverType,
 	createReceiverDefaultConfig,
-	component.WithTracesReceiver(createTracesReceiver, component.StabilityLevelInDevelopment),
-	component.WithMetricsReceiver(createMetricsReceiver, component.StabilityLevelInDevelopment),
-	component.WithLogsReceiver(createLogsReceiver, component.StabilityLevelInDevelopment))
+	xreceiver.WithTraces(createTracesReceiver, component.StabilityLevelDevelopment),
+	xreceiver.WithMetrics(createMetricsReceiver, component.StabilityLevelDevelopment),
+	xreceiver.WithLogs(createLogsReceiver, component.StabilityLevelDevelopment),
+	xreceiver.WithProfiles(createProfilesReceiver, component.StabilityLevelDevelopment),
+)
 
-func createReceiverDefaultConfig() config.Receiver {
-	return &ExampleReceiverConfig{
-		ReceiverSettings: config.NewReceiverSettings(config.NewComponentID(receiverType)),
-	}
+func createReceiverDefaultConfig() component.Config {
+	return &struct{}{}
 }
 
-// createTracesReceiver creates a trace receiver based on this config.
+// createTraces creates a receiver.Traces based on this config.
 func createTracesReceiver(
 	_ context.Context,
-	_ component.ReceiverCreateSettings,
-	cfg config.Receiver,
+	_ receiver.Settings,
+	cfg component.Config,
 	nextConsumer consumer.Traces,
-) (component.TracesReceiver, error) {
-	receiver := createReceiver(cfg)
-	receiver.Traces = nextConsumer
-	return receiver, nil
+) (receiver.Traces, error) {
+	tr := createReceiver(cfg)
+	tr.ConsumeTracesFunc = nextConsumer.ConsumeTraces
+	return tr, nil
 }
 
-// createMetricsReceiver creates a metrics receiver based on this config.
+// createMetrics creates a receiver.Metrics based on this config.
 func createMetricsReceiver(
 	_ context.Context,
-	_ component.ReceiverCreateSettings,
-	cfg config.Receiver,
+	_ receiver.Settings,
+	cfg component.Config,
 	nextConsumer consumer.Metrics,
-) (component.MetricsReceiver, error) {
-	receiver := createReceiver(cfg)
-	receiver.Metrics = nextConsumer
-	return receiver, nil
+) (receiver.Metrics, error) {
+	mr := createReceiver(cfg)
+	mr.ConsumeMetricsFunc = nextConsumer.ConsumeMetrics
+	return mr, nil
 }
 
+// createLogs creates a receiver.Logs based on this config.
 func createLogsReceiver(
 	_ context.Context,
-	_ component.ReceiverCreateSettings,
-	cfg config.Receiver,
+	_ receiver.Settings,
+	cfg component.Config,
 	nextConsumer consumer.Logs,
-) (component.LogsReceiver, error) {
-	receiver := createReceiver(cfg)
-	receiver.Logs = nextConsumer
-	return receiver, nil
+) (receiver.Logs, error) {
+	lr := createReceiver(cfg)
+	lr.ConsumeLogsFunc = nextConsumer.ConsumeLogs
+	return lr, nil
 }
 
-func createReceiver(cfg config.Receiver) *ExampleReceiver {
+// createProfiles creates a receiver.Profiles based on this config.
+func createProfilesReceiver(
+	_ context.Context,
+	_ receiver.Settings,
+	cfg component.Config,
+	nextConsumer xconsumer.Profiles,
+) (xreceiver.Profiles, error) {
+	tr := createReceiver(cfg)
+	tr.ConsumeProfilesFunc = nextConsumer.ConsumeProfiles
+	return tr, nil
+}
+
+func createReceiver(cfg component.Config) *ExampleReceiver {
 	// There must be one receiver for all data types. We maintain a map of
 	// receivers per config.
 
 	// Check to see if there is already a receiver for this config.
-	receiver, ok := exampleReceivers[cfg]
+	er, ok := exampleReceivers[cfg]
 	if !ok {
-		receiver = &ExampleReceiver{}
+		er = &ExampleReceiver{}
 		// Remember the receiver in the map
-		exampleReceivers[cfg] = receiver
+		exampleReceivers[cfg] = er
 	}
 
-	return receiver
+	return er
 }
 
-// ExampleReceiver allows producing traces and metrics for testing purposes.
+// ExampleReceiver allows producing traces, metrics, logs and profiles for testing purposes.
 type ExampleReceiver struct {
-	consumer.Traces
-	consumer.Metrics
-	consumer.Logs
-	Started bool
-	Stopped bool
-}
-
-// Start tells the receiver to start its processing.
-func (erp *ExampleReceiver) Start(_ context.Context, _ component.Host) error {
-	erp.Started = true
-	return nil
-}
-
-// Shutdown tells the receiver that should stop reception,
-func (erp *ExampleReceiver) Shutdown(context.Context) error {
-	erp.Stopped = true
-	return nil
+	componentState
+	consumer.ConsumeTracesFunc
+	consumer.ConsumeMetricsFunc
+	consumer.ConsumeLogsFunc
+	xconsumer.ConsumeProfilesFunc
 }
 
 // This is the map of already created example receivers for particular configurations.
-// We maintain this map because the ReceiverFactory is asked trace and metric receivers separately
-// when it gets CreateTracesReceiver() and CreateMetricsReceiver() but they must not
+// We maintain this map because the receiver.Factory is asked trace and metric receivers separately
+// when it gets CreateTraces() and CreateMetrics() but they must not
 // create separate objects, they must use one Receiver object per configuration.
-var exampleReceivers = map[config.Receiver]*ExampleReceiver{}
+var exampleReceivers = map[component.Config]*ExampleReceiver{}

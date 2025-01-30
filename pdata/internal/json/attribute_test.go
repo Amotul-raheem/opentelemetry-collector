@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package json
 
@@ -19,6 +8,7 @@ import (
 
 	jsoniter "github.com/json-iterator/go"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	otlpcommon "go.opentelemetry.io/collector/pdata/internal/data/protogen/common/v1"
 )
@@ -162,7 +152,7 @@ func TestReadAttributeUnknownField(t *testing.T) {
 	defer jsoniter.ConfigFastest.ReturnIterator(iter)
 	value := ReadAttribute(iter)
 	//  unknown fields should not be an error
-	assert.NoError(t, iter.Error)
+	require.NoError(t, iter.Error)
 	assert.EqualValues(t, otlpcommon.KeyValue{}, value)
 }
 
@@ -173,7 +163,7 @@ func TestReadAttributeValueUnknownField(t *testing.T) {
 	defer jsoniter.ConfigFastest.ReturnIterator(iter)
 	value := ReadAttribute(iter)
 	//  unknown fields should not be an error
-	assert.NoError(t, iter.Error)
+	require.NoError(t, iter.Error)
 	assert.EqualValues(t, otlpcommon.KeyValue{Key: "test"}, value)
 }
 
@@ -183,7 +173,7 @@ func TestReadValueUnknownField(t *testing.T) {
 	defer jsoniter.ConfigFastest.ReturnIterator(iter)
 	value := &otlpcommon.AnyValue{}
 	ReadValue(iter, value)
-	assert.NoError(t, iter.Error)
+	require.NoError(t, iter.Error)
 	assert.EqualValues(t, &otlpcommon.AnyValue{}, value)
 }
 
@@ -193,9 +183,7 @@ func TestReadValueInvliadBytesValue(t *testing.T) {
 	defer jsoniter.ConfigFastest.ReturnIterator(iter)
 
 	ReadValue(iter, &otlpcommon.AnyValue{})
-	if assert.Error(t, iter.Error) {
-		assert.Contains(t, iter.Error.Error(), "base64")
-	}
+	assert.ErrorContains(t, iter.Error, "base64")
 }
 
 func TestReadArrayUnknownField(t *testing.T) {
@@ -203,7 +191,7 @@ func TestReadArrayUnknownField(t *testing.T) {
 	iter := jsoniter.ConfigFastest.BorrowIterator([]byte(jsonStr))
 	defer jsoniter.ConfigFastest.ReturnIterator(iter)
 	value := readArray(iter)
-	assert.NoError(t, iter.Error)
+	require.NoError(t, iter.Error)
 	assert.EqualValues(t, &otlpcommon.ArrayValue{}, value)
 }
 
@@ -212,7 +200,7 @@ func TestReadKvlistValueUnknownField(t *testing.T) {
 	iter := jsoniter.ConfigFastest.BorrowIterator([]byte(jsonStr))
 	defer jsoniter.ConfigFastest.ReturnIterator(iter)
 	value := readKvlistValue(iter)
-	assert.NoError(t, iter.Error)
+	require.NoError(t, iter.Error)
 	assert.EqualValues(t, &otlpcommon.KeyValueList{}, value)
 }
 
@@ -223,7 +211,7 @@ func TestReadArrayValueInvalidArrayValue(t *testing.T) {
 
 	value := &otlpcommon.AnyValue{}
 	ReadValue(iter, value)
-	assert.NoError(t, iter.Error)
+	require.NoError(t, iter.Error)
 	assert.EqualValues(t, &otlpcommon.AnyValue{
 		Value: &otlpcommon.AnyValue_ArrayValue{
 			ArrayValue: &otlpcommon.ArrayValue{},
@@ -238,7 +226,7 @@ func TestReadKvlistValueInvalidArrayValue(t *testing.T) {
 
 	value := &otlpcommon.AnyValue{}
 	ReadValue(iter, value)
-	assert.NoError(t, iter.Error)
+	require.NoError(t, iter.Error)
 	assert.EqualValues(t, &otlpcommon.AnyValue{
 		Value: &otlpcommon.AnyValue_KvlistValue{
 			KvlistValue: &otlpcommon.KeyValueList{},

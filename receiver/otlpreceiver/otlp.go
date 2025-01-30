@@ -1,23 +1,11 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package otlpreceiver // import "go.opentelemetry.io/collector/receiver/otlpreceiver"
 
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"sync"
@@ -26,134 +14,189 @@ import (
 	"google.golang.org/grpc"
 
 	"go.opentelemetry.io/collector/component"
-	"go.opentelemetry.io/collector/config/configgrpc"
+	"go.opentelemetry.io/collector/component/componentstatus"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/consumer/xconsumer"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
+	"go.opentelemetry.io/collector/pdata/pprofile/pprofileotlp"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
+	"go.opentelemetry.io/collector/receiver"
 	"go.opentelemetry.io/collector/receiver/otlpreceiver/internal/logs"
 	"go.opentelemetry.io/collector/receiver/otlpreceiver/internal/metrics"
+	"go.opentelemetry.io/collector/receiver/otlpreceiver/internal/profiles"
 	"go.opentelemetry.io/collector/receiver/otlpreceiver/internal/trace"
+	"go.opentelemetry.io/collector/receiver/receiverhelper"
 )
 
 // otlpReceiver is the type that exposes Trace and Metrics reception.
 type otlpReceiver struct {
 	cfg        *Config
 	serverGRPC *grpc.Server
-	httpMux    *http.ServeMux
 	serverHTTP *http.Server
 
-	traceReceiver   *trace.Receiver
-	metricsReceiver *metrics.Receiver
-	logReceiver     *logs.Receiver
-	shutdownWG      sync.WaitGroup
+	nextTraces   consumer.Traces
+	nextMetrics  consumer.Metrics
+	nextLogs     consumer.Logs
+	nextProfiles xconsumer.Profiles
+	shutdownWG   sync.WaitGroup
 
-	settings component.ReceiverCreateSettings
+	obsrepGRPC *receiverhelper.ObsReport
+	obsrepHTTP *receiverhelper.ObsReport
+
+	settings *receiver.Settings
 }
 
 // newOtlpReceiver just creates the OpenTelemetry receiver services. It is the caller's
 // responsibility to invoke the respective Start*Reception methods as well
 // as the various Stop*Reception methods to end it.
-func newOtlpReceiver(cfg *Config, settings component.ReceiverCreateSettings) *otlpReceiver {
+func newOtlpReceiver(cfg *Config, set *receiver.Settings) (*otlpReceiver, error) {
 	r := &otlpReceiver{
-		cfg:      cfg,
-		settings: settings,
-	}
-	if cfg.HTTP != nil {
-		r.httpMux = http.NewServeMux()
+		cfg:          cfg,
+		nextTraces:   nil,
+		nextMetrics:  nil,
+		nextLogs:     nil,
+		nextProfiles: nil,
+		settings:     set,
 	}
 
-	return r
+	var err error
+	r.obsrepGRPC, err = receiverhelper.NewObsReport(receiverhelper.ObsReportSettings{
+		ReceiverID:             set.ID,
+		Transport:              "grpc",
+		ReceiverCreateSettings: *set,
+	})
+	if err != nil {
+		return nil, err
+	}
+	r.obsrepHTTP, err = receiverhelper.NewObsReport(receiverhelper.ObsReportSettings{
+		ReceiverID:             set.ID,
+		Transport:              "http",
+		ReceiverCreateSettings: *set,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return r, nil
 }
 
-func (r *otlpReceiver) startGRPCServer(cfg *configgrpc.GRPCServerSettings, host component.Host) error {
-	r.settings.Logger.Info("Starting GRPC server", zap.String("endpoint", cfg.NetAddr.Endpoint))
+func (r *otlpReceiver) startGRPCServer(host component.Host) error {
+	// If GRPC is not enabled, nothing to start.
+	if r.cfg.GRPC == nil {
+		return nil
+	}
 
-	gln, err := cfg.ToListener()
-	if err != nil {
+	var err error
+	if r.serverGRPC, err = r.cfg.GRPC.ToServer(context.Background(), host, r.settings.TelemetrySettings); err != nil {
 		return err
 	}
+
+	if r.nextTraces != nil {
+		ptraceotlp.RegisterGRPCServer(r.serverGRPC, trace.New(r.nextTraces, r.obsrepGRPC))
+	}
+
+	if r.nextMetrics != nil {
+		pmetricotlp.RegisterGRPCServer(r.serverGRPC, metrics.New(r.nextMetrics, r.obsrepGRPC))
+	}
+
+	if r.nextLogs != nil {
+		plogotlp.RegisterGRPCServer(r.serverGRPC, logs.New(r.nextLogs, r.obsrepGRPC))
+	}
+
+	if r.nextProfiles != nil {
+		pprofileotlp.RegisterGRPCServer(r.serverGRPC, profiles.New(r.nextProfiles))
+	}
+
+	r.settings.Logger.Info("Starting GRPC server", zap.String("endpoint", r.cfg.GRPC.NetAddr.Endpoint))
+	var gln net.Listener
+	if gln, err = r.cfg.GRPC.NetAddr.Listen(context.Background()); err != nil {
+		return err
+	}
+
 	r.shutdownWG.Add(1)
 	go func() {
 		defer r.shutdownWG.Done()
 
 		if errGrpc := r.serverGRPC.Serve(gln); errGrpc != nil && !errors.Is(errGrpc, grpc.ErrServerStopped) {
-			host.ReportFatalError(errGrpc)
+			componentstatus.ReportStatus(host, componentstatus.NewFatalErrorEvent(errGrpc))
 		}
 	}()
 	return nil
 }
 
-func (r *otlpReceiver) startHTTPServer(cfg *confighttp.HTTPServerSettings, host component.Host) error {
-	r.settings.Logger.Info("Starting HTTP server", zap.String("endpoint", cfg.Endpoint))
-	var hln net.Listener
-	hln, err := cfg.ToListener()
-	if err != nil {
+func (r *otlpReceiver) startHTTPServer(ctx context.Context, host component.Host) error {
+	// If HTTP is not enabled, nothing to start.
+	if r.cfg.HTTP == nil {
+		return nil
+	}
+
+	httpMux := http.NewServeMux()
+	if r.nextTraces != nil {
+		httpTracesReceiver := trace.New(r.nextTraces, r.obsrepHTTP)
+		httpMux.HandleFunc(r.cfg.HTTP.TracesURLPath, func(resp http.ResponseWriter, req *http.Request) {
+			handleTraces(resp, req, httpTracesReceiver)
+		})
+	}
+
+	if r.nextMetrics != nil {
+		httpMetricsReceiver := metrics.New(r.nextMetrics, r.obsrepHTTP)
+		httpMux.HandleFunc(r.cfg.HTTP.MetricsURLPath, func(resp http.ResponseWriter, req *http.Request) {
+			handleMetrics(resp, req, httpMetricsReceiver)
+		})
+	}
+
+	if r.nextLogs != nil {
+		httpLogsReceiver := logs.New(r.nextLogs, r.obsrepHTTP)
+		httpMux.HandleFunc(r.cfg.HTTP.LogsURLPath, func(resp http.ResponseWriter, req *http.Request) {
+			handleLogs(resp, req, httpLogsReceiver)
+		})
+	}
+
+	if r.nextProfiles != nil {
+		httpProfilesReceiver := profiles.New(r.nextProfiles)
+		httpMux.HandleFunc(defaultProfilesURLPath, func(resp http.ResponseWriter, req *http.Request) {
+			handleProfiles(resp, req, httpProfilesReceiver)
+		})
+	}
+
+	var err error
+	if r.serverHTTP, err = r.cfg.HTTP.ToServer(ctx, host, r.settings.TelemetrySettings, httpMux, confighttp.WithErrorHandler(errorHandler)); err != nil {
 		return err
 	}
+
+	r.settings.Logger.Info("Starting HTTP server", zap.String("endpoint", r.cfg.HTTP.ServerConfig.Endpoint))
+	var hln net.Listener
+	if hln, err = r.cfg.HTTP.ServerConfig.ToListener(ctx); err != nil {
+		return err
+	}
+
 	r.shutdownWG.Add(1)
 	go func() {
 		defer r.shutdownWG.Done()
 
 		if errHTTP := r.serverHTTP.Serve(hln); errHTTP != nil && !errors.Is(errHTTP, http.ErrServerClosed) {
-			host.ReportFatalError(errHTTP)
+			componentstatus.ReportStatus(host, componentstatus.NewFatalErrorEvent(errHTTP))
 		}
 	}()
 	return nil
 }
 
-func (r *otlpReceiver) startProtocolServers(host component.Host) error {
-	var err error
-	if r.cfg.GRPC != nil {
-		var opts []grpc.ServerOption
-		opts, err = r.cfg.GRPC.ToServerOption(host, r.settings.TelemetrySettings)
-		if err != nil {
-			return err
-		}
-		r.serverGRPC = grpc.NewServer(opts...)
-
-		if r.traceReceiver != nil {
-			ptraceotlp.RegisterGRPCServer(r.serverGRPC, r.traceReceiver)
-		}
-
-		if r.metricsReceiver != nil {
-			pmetricotlp.RegisterGRPCServer(r.serverGRPC, r.metricsReceiver)
-		}
-
-		if r.logReceiver != nil {
-			plogotlp.RegisterGRPCServer(r.serverGRPC, r.logReceiver)
-		}
-
-		err = r.startGRPCServer(r.cfg.GRPC, host)
-		if err != nil {
-			return err
-		}
-	}
-	if r.cfg.HTTP != nil {
-		r.serverHTTP, err = r.cfg.HTTP.ToServer(
-			host,
-			r.settings.TelemetrySettings,
-			r.httpMux,
-			confighttp.WithErrorHandler(errorHandler),
-		)
-		if err != nil {
-			return err
-		}
-
-		err = r.startHTTPServer(r.cfg.HTTP, host)
-		if err != nil {
-			return err
-		}
-	}
-
-	return err
-}
-
 // Start runs the trace receiver on the gRPC server. Currently
 // it also enables the metrics receiver too.
-func (r *otlpReceiver) Start(_ context.Context, host component.Host) error {
-	return r.startProtocolServers(host)
+func (r *otlpReceiver) Start(ctx context.Context, host component.Host) error {
+	if err := r.startGRPCServer(host); err != nil {
+		return err
+	}
+	if err := r.startHTTPServer(ctx, host); err != nil {
+		// It's possible that a valid GRPC server configuration was specified,
+		// but an invalid HTTP configuration. If that's the case, the successfully
+		// started GRPC server must be shutdown to ensure no goroutines are leaked.
+		return errors.Join(err, r.Shutdown(ctx))
+	}
+
+	return nil
 }
 
 // Shutdown is a method to turn off receiving.
@@ -172,84 +215,18 @@ func (r *otlpReceiver) Shutdown(ctx context.Context) error {
 	return err
 }
 
-func (r *otlpReceiver) registerTraceConsumer(tc consumer.Traces) error {
-	if tc == nil {
-		return component.ErrNilNextConsumer
-	}
-	r.traceReceiver = trace.New(r.cfg.ID(), tc, r.settings)
-	if r.httpMux != nil {
-		r.httpMux.HandleFunc("/v1/traces", func(resp http.ResponseWriter, req *http.Request) {
-			if req.Method != http.MethodPost {
-				handleUnmatchedMethod(resp)
-				return
-			}
-			switch req.Header.Get("Content-Type") {
-			case pbContentType:
-				handleTraces(resp, req, r.traceReceiver, pbEncoder)
-			case jsonContentType:
-				handleTraces(resp, req, r.traceReceiver, jsEncoder)
-			default:
-				handleUnmatchedContentType(resp)
-			}
-		})
-	}
-	return nil
+func (r *otlpReceiver) registerTraceConsumer(tc consumer.Traces) {
+	r.nextTraces = tc
 }
 
-func (r *otlpReceiver) registerMetricsConsumer(mc consumer.Metrics) error {
-	if mc == nil {
-		return component.ErrNilNextConsumer
-	}
-	r.metricsReceiver = metrics.New(r.cfg.ID(), mc, r.settings)
-	if r.httpMux != nil {
-		r.httpMux.HandleFunc("/v1/metrics", func(resp http.ResponseWriter, req *http.Request) {
-			if req.Method != http.MethodPost {
-				handleUnmatchedMethod(resp)
-				return
-			}
-			switch req.Header.Get("Content-Type") {
-			case pbContentType:
-				handleMetrics(resp, req, r.metricsReceiver, pbEncoder)
-			case jsonContentType:
-				handleMetrics(resp, req, r.metricsReceiver, jsEncoder)
-			default:
-				handleUnmatchedContentType(resp)
-			}
-		})
-	}
-	return nil
+func (r *otlpReceiver) registerMetricsConsumer(mc consumer.Metrics) {
+	r.nextMetrics = mc
 }
 
-func (r *otlpReceiver) registerLogsConsumer(lc consumer.Logs) error {
-	if lc == nil {
-		return component.ErrNilNextConsumer
-	}
-	r.logReceiver = logs.New(r.cfg.ID(), lc, r.settings)
-	if r.httpMux != nil {
-		r.httpMux.HandleFunc("/v1/logs", func(resp http.ResponseWriter, req *http.Request) {
-			if req.Method != http.MethodPost {
-				handleUnmatchedMethod(resp)
-				return
-			}
-			switch req.Header.Get("Content-Type") {
-			case pbContentType:
-				handleLogs(resp, req, r.logReceiver, pbEncoder)
-			case jsonContentType:
-				handleLogs(resp, req, r.logReceiver, jsEncoder)
-			default:
-				handleUnmatchedContentType(resp)
-			}
-		})
-	}
-	return nil
+func (r *otlpReceiver) registerLogsConsumer(lc consumer.Logs) {
+	r.nextLogs = lc
 }
 
-func handleUnmatchedMethod(resp http.ResponseWriter) {
-	status := http.StatusMethodNotAllowed
-	writeResponse(resp, "text/plain", status, []byte(fmt.Sprintf("%v method not allowed, supported: [POST]", status)))
-}
-
-func handleUnmatchedContentType(resp http.ResponseWriter) {
-	status := http.StatusUnsupportedMediaType
-	writeResponse(resp, "text/plain", status, []byte(fmt.Sprintf("%v unsupported media type, supported: [%s, %s]", status, jsonContentType, pbContentType)))
+func (r *otlpReceiver) registerProfilesConsumer(tc xconsumer.Profiles) {
+	r.nextProfiles = tc
 }

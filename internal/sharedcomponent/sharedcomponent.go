@@ -1,87 +1,167 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
-// Package sharedcomponent exposes util functionality for receivers and exporters
-// that need to share state between different signal types instances such as net.Listener or os.File.
+// Package sharedcomponent exposes functionality for components
+// to register against a shared key, such as a configuration object, in order to be reused across signal types.
+// This is particularly useful when the component relies on a shared resource such as os.File or http.Server.
 package sharedcomponent // import "go.opentelemetry.io/collector/internal/sharedcomponent"
 
 import (
+	"container/ring"
 	"context"
 	"sync"
 
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/component/componentstatus"
 )
 
-// SharedComponents a map that keeps reference of all created instances for a given configuration,
-// and ensures that the shared state is started and stopped only once.
-type SharedComponents struct {
-	comps map[interface{}]*SharedComponent
-}
-
-// NewSharedComponents returns a new empty SharedComponents.
-func NewSharedComponents() *SharedComponents {
-	return &SharedComponents{
-		comps: make(map[interface{}]*SharedComponent),
+func NewMap[K comparable, V component.Component]() *Map[K, V] {
+	return &Map[K, V]{
+		components: map[K]*Component[V]{},
 	}
 }
 
-// GetOrAdd returns the already created instance if exists, otherwise creates a new instance
+// Map keeps reference of all created instances for a given shared key such as a component configuration.
+type Map[K comparable, V component.Component] struct {
+	lock       sync.Mutex
+	components map[K]*Component[V]
+}
+
+// LoadOrStore returns the already created instance if exists, otherwise creates a new instance
 // and adds it to the map of references.
-func (scs *SharedComponents) GetOrAdd(key interface{}, create func() component.Component) *SharedComponent {
-	if c, ok := scs.comps[key]; ok {
-		return c
+func (m *Map[K, V]) LoadOrStore(key K, create func() (V, error)) (*Component[V], error) {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+	if c, ok := m.components[key]; ok {
+		return c, nil
 	}
-	newComp := &SharedComponent{
-		Component: create(),
+	comp, err := create()
+	if err != nil {
+		return nil, err
+	}
+
+	newComp := &Component[V]{
+		component: comp,
 		removeFunc: func() {
-			delete(scs.comps, key)
+			m.lock.Lock()
+			defer m.lock.Unlock()
+			delete(m.components, key)
 		},
 	}
-	scs.comps[key] = newComp
-	return newComp
+	m.components[key] = newComp
+	return newComp, nil
 }
 
-// SharedComponent ensures that the wrapped component is started and stopped only once.
-// When stopped it is removed from the SharedComponents map.
-type SharedComponent struct {
-	component.Component
+// Component ensures that the wrapped component is started and stopped only once.
+// When stopped it is removed from the Map.
+type Component[V component.Component] struct {
+	component V
 
 	startOnce  sync.Once
 	stopOnce   sync.Once
 	removeFunc func()
+
+	hostWrapper *hostWrapper
 }
 
 // Unwrap returns the original component.
-func (r *SharedComponent) Unwrap() component.Component {
-	return r.Component
+func (c *Component[V]) Unwrap() V {
+	return c.component
 }
 
-// Start implements component.Component.
-func (r *SharedComponent) Start(ctx context.Context, host component.Host) error {
-	var err error
-	r.startOnce.Do(func() {
-		err = r.Component.Start(ctx, host)
+// Start starts the underlying component if it never started before.
+func (c *Component[V]) Start(ctx context.Context, host component.Host) error {
+	if c.hostWrapper == nil {
+		var err error
+		c.startOnce.Do(func() {
+			c.hostWrapper = &hostWrapper{
+				host:           host,
+				sources:        make([]componentstatus.Reporter, 0),
+				previousEvents: ring.New(5),
+			}
+			statusReporter, isStatusReporter := host.(componentstatus.Reporter)
+			if isStatusReporter {
+				c.hostWrapper.addSource(statusReporter)
+			}
+
+			// It's important that status for a shared component is reported through its
+			// telemetry settings to keep status in sync and avoid race conditions. This logic duplicates
+			// and takes priority over the automated status reporting that happens in graph, making the
+			// status reporting in graph a no-op.
+			c.hostWrapper.Report(componentstatus.NewEvent(componentstatus.StatusStarting))
+			if err = c.component.Start(ctx, c.hostWrapper); err != nil {
+				c.hostWrapper.Report(componentstatus.NewPermanentErrorEvent(err))
+			}
+		})
+		return err
+	}
+	statusReporter, isStatusReporter := host.(componentstatus.Reporter)
+	if isStatusReporter {
+		c.hostWrapper.addSource(statusReporter)
+	}
+	return nil
+}
+
+var (
+	_ component.Host           = (*hostWrapper)(nil)
+	_ componentstatus.Reporter = (*hostWrapper)(nil)
+)
+
+type hostWrapper struct {
+	host           component.Host
+	sources        []componentstatus.Reporter
+	previousEvents *ring.Ring
+	lock           sync.Mutex
+}
+
+func (h *hostWrapper) GetExtensions() map[component.ID]component.Component {
+	return h.host.GetExtensions()
+}
+
+func (h *hostWrapper) Report(e *componentstatus.Event) {
+	// Only remember an event if it will be emitted and it has not been sent already.
+	h.lock.Lock()
+	defer h.lock.Unlock()
+	if len(h.sources) > 0 {
+		h.previousEvents.Value = e
+		h.previousEvents = h.previousEvents.Next()
+	}
+	for _, s := range h.sources {
+		s.Report(e)
+	}
+}
+
+func (h *hostWrapper) addSource(s componentstatus.Reporter) {
+	h.lock.Lock()
+	defer h.lock.Unlock()
+	h.previousEvents.Do(func(a any) {
+		if e, ok := a.(*componentstatus.Event); ok {
+			s.Report(e)
+		}
 	})
-	return err
+	h.sources = append(h.sources, s)
 }
 
-// Shutdown implements component.Component.
-func (r *SharedComponent) Shutdown(ctx context.Context) error {
+// Shutdown shuts down the underlying component.
+func (c *Component[V]) Shutdown(ctx context.Context) error {
 	var err error
-	r.stopOnce.Do(func() {
-		err = r.Component.Shutdown(ctx)
-		r.removeFunc()
+	c.stopOnce.Do(func() {
+		// It's important that status for a shared component is reported through its
+		// telemetry settings to keep status in sync and avoid race conditions. This logic duplicates
+		// and takes priority over the automated status reporting that happens in graph, making the
+		// status reporting in graph a no-op.
+		if c.hostWrapper != nil {
+			c.hostWrapper.Report(componentstatus.NewEvent(componentstatus.StatusStopping))
+		}
+		err = c.component.Shutdown(ctx)
+		if c.hostWrapper != nil {
+			if err != nil {
+				c.hostWrapper.Report(componentstatus.NewPermanentErrorEvent(err))
+			} else {
+				c.hostWrapper.Report(componentstatus.NewEvent(componentstatus.StatusStopped))
+			}
+		}
+		c.removeFunc()
 	})
 	return err
 }

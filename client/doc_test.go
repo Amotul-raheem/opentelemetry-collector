@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package client_test
 
@@ -26,7 +15,12 @@ import (
 
 func Example_receiver() {
 	// Your receiver get a next consumer when it's constructed
-	var next consumer.Traces
+	next, err := consumer.NewTraces(func(_ context.Context, _ ptrace.Traces) error {
+		return nil
+	})
+	if err != nil {
+		panic(err)
+	}
 
 	// You'll convert the incoming data into pipeline data
 	td := ptrace.NewTraces()
@@ -41,13 +35,16 @@ func Example_receiver() {
 
 	// Extract the client information based on your original context and set it
 	// to Addr
-	cl.Addr = &net.IPAddr{ // nolint
+	//nolint:govet
+	cl.Addr = &net.IPAddr{
 		IP: net.IPv4(1, 2, 3, 4),
 	}
 
 	// When you are done, propagate the context down the pipeline to the next
-	// consumer
-	next.ConsumeTraces(ctx, td) // nolint
+	// consumer and handle error.
+	if err = next.ConsumeTraces(ctx, td); err != nil {
+		panic(err)
+	}
 }
 
 func Example_processor() {
@@ -82,12 +79,13 @@ type exampleAuthData struct {
 	username string
 }
 
-func (e *exampleAuthData) GetAttribute(key string) interface{} {
+func (e *exampleAuthData) GetAttribute(key string) any {
 	if key == "username" {
 		return e.username
 	}
 	return nil
 }
+
 func (e *exampleAuthData) GetAttributeNames() []string {
 	return []string{"username"}
 }

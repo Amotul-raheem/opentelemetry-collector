@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package consumertest // import "go.opentelemetry.io/collector/consumer/consumertest"
 
@@ -19,8 +8,10 @@ import (
 	"sync"
 
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/consumer/xconsumer"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/pdata/pprofile"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 )
 
@@ -166,4 +157,52 @@ func (sle *LogsSink) Reset() {
 
 	sle.logs = nil
 	sle.logRecordCount = 0
+}
+
+// ProfilesSink is a xconsumer.Profiles that acts like a sink that
+// stores all profiles and allows querying them for testing.
+type ProfilesSink struct {
+	nonMutatingConsumer
+	mu          sync.Mutex
+	profiles    []pprofile.Profiles
+	sampleCount int
+}
+
+var _ xconsumer.Profiles = (*ProfilesSink)(nil)
+
+// ConsumeProfiles stores profiles to this sink.
+func (ste *ProfilesSink) ConsumeProfiles(_ context.Context, td pprofile.Profiles) error {
+	ste.mu.Lock()
+	defer ste.mu.Unlock()
+
+	ste.profiles = append(ste.profiles, td)
+	ste.sampleCount += td.SampleCount()
+
+	return nil
+}
+
+// AllProfiles returns the profiles stored by this sink since last Reset.
+func (ste *ProfilesSink) AllProfiles() []pprofile.Profiles {
+	ste.mu.Lock()
+	defer ste.mu.Unlock()
+
+	copyProfiles := make([]pprofile.Profiles, len(ste.profiles))
+	copy(copyProfiles, ste.profiles)
+	return copyProfiles
+}
+
+// ProfileRecordCount returns the number of profiles stored by this sink since last Reset.
+func (ste *ProfilesSink) SampleCount() int {
+	ste.mu.Lock()
+	defer ste.mu.Unlock()
+	return ste.sampleCount
+}
+
+// Reset deletes any stored data.
+func (ste *ProfilesSink) Reset() {
+	ste.mu.Lock()
+	defer ste.mu.Unlock()
+
+	ste.profiles = nil
+	ste.sampleCount = 0
 }

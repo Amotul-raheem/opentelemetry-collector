@@ -1,33 +1,79 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package confignet
 
 import (
+	"context"
+	"errors"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestNetAddr(t *testing.T) {
-	nas := &NetAddr{
+func TestNewDefaultDialerConfig(t *testing.T) {
+	expectedDialerConfig := DialerConfig{}
+	dialerConfig := NewDefaultDialerConfig()
+	require.Equal(t, expectedDialerConfig, dialerConfig)
+}
+
+func TestNewDefaultAddrConfig(t *testing.T) {
+	expectedAddrConfig := AddrConfig{}
+	addrConfig := NewDefaultAddrConfig()
+	require.Equal(t, expectedAddrConfig, addrConfig)
+}
+
+func TestNewDefaultTCPAddrConfig(t *testing.T) {
+	expectedTCPAddrConfig := TCPAddrConfig{}
+	tcpAddrconfig := NewDefaultTCPAddrConfig()
+	require.Equal(t, expectedTCPAddrConfig, tcpAddrconfig)
+}
+
+func TestAddrConfigTimeout(t *testing.T) {
+	nac := &AddrConfig{
 		Endpoint:  "localhost:0",
-		Transport: "tcp",
+		Transport: TransportTypeTCP,
+		DialerConfig: DialerConfig{
+			Timeout: -1 * time.Second,
+		},
 	}
-	ln, err := nas.Listen()
-	assert.NoError(t, err)
+	_, err := nac.Dial(context.Background())
+	require.Error(t, err)
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		assert.True(t, netErr.Timeout())
+	} else {
+		assert.Fail(t, "error should be a net.Error")
+	}
+}
+
+func TestTCPAddrConfigTimeout(t *testing.T) {
+	nac := &TCPAddrConfig{
+		Endpoint: "localhost:0",
+		DialerConfig: DialerConfig{
+			Timeout: -1 * time.Second,
+		},
+	}
+	_, err := nac.Dial(context.Background())
+	require.Error(t, err)
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		assert.True(t, netErr.Timeout())
+	} else {
+		assert.Fail(t, "error should be a net.Error")
+	}
+}
+
+func TestAddrConfig(t *testing.T) {
+	nas := &AddrConfig{
+		Endpoint:  "localhost:0",
+		Transport: TransportTypeTCP,
+	}
+	ln, err := nas.Listen(context.Background())
+	require.NoError(t, err)
 	done := make(chan bool, 1)
 
 	go func() {
@@ -42,13 +88,13 @@ func TestNetAddr(t *testing.T) {
 		done <- true
 	}()
 
-	nac := &NetAddr{
+	nac := &AddrConfig{
 		Endpoint:  ln.Addr().String(),
-		Transport: "tcp",
+		Transport: TransportTypeTCP,
 	}
 	var conn net.Conn
-	conn, err = nac.Dial()
-	assert.NoError(t, err)
+	conn, err = nac.Dial(context.Background())
+	require.NoError(t, err)
 	_, err = conn.Write([]byte("test"))
 	assert.NoError(t, err)
 	assert.NoError(t, conn.Close())
@@ -56,12 +102,29 @@ func TestNetAddr(t *testing.T) {
 	assert.NoError(t, ln.Close())
 }
 
-func TestTcpAddr(t *testing.T) {
-	nas := &TCPAddr{
+func Test_NetAddr_Validate(t *testing.T) {
+	na := &AddrConfig{
+		Transport: TransportTypeTCP,
+	}
+	require.NoError(t, na.Validate())
+
+	na = &AddrConfig{
+		Transport: transportTypeEmpty,
+	}
+	require.Error(t, na.Validate())
+
+	na = &AddrConfig{
+		Transport: "random string",
+	}
+	assert.Error(t, na.Validate())
+}
+
+func TestTCPAddrConfig(t *testing.T) {
+	nas := &TCPAddrConfig{
 		Endpoint: "localhost:0",
 	}
-	ln, err := nas.Listen()
-	assert.NoError(t, err)
+	ln, err := nas.Listen(context.Background())
+	require.NoError(t, err)
 	done := make(chan bool, 1)
 
 	go func() {
@@ -76,15 +139,23 @@ func TestTcpAddr(t *testing.T) {
 		done <- true
 	}()
 
-	nac := &TCPAddr{
+	nac := &TCPAddrConfig{
 		Endpoint: ln.Addr().String(),
 	}
 	var conn net.Conn
-	conn, err = nac.Dial()
-	assert.NoError(t, err)
+	conn, err = nac.Dial(context.Background())
+	require.NoError(t, err)
 	_, err = conn.Write([]byte("test"))
 	assert.NoError(t, err)
 	assert.NoError(t, conn.Close())
 	<-done
 	assert.NoError(t, ln.Close())
+}
+
+func Test_TransportType_UnmarshalText(t *testing.T) {
+	var tt TransportType
+	err := tt.UnmarshalText([]byte("tcp"))
+	require.NoError(t, err)
+	err = tt.UnmarshalText([]byte("invalid"))
+	require.Error(t, err)
 }

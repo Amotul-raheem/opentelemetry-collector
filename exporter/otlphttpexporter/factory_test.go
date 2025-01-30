@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package otlphttpexporter
 
@@ -24,11 +13,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.opentelemetry.io/collector/component/componenttest"
-	"go.opentelemetry.io/collector/config"
 	"go.opentelemetry.io/collector/config/configcompression"
 	"go.opentelemetry.io/collector/config/confighttp"
-	"go.opentelemetry.io/collector/config/configtest"
+	"go.opentelemetry.io/collector/config/configopaque"
 	"go.opentelemetry.io/collector/config/configtls"
+	"go.opentelemetry.io/collector/exporter/exportertest"
+	"go.opentelemetry.io/collector/exporter/xexporter"
 	"go.opentelemetry.io/collector/internal/testutil"
 )
 
@@ -36,142 +26,137 @@ func TestCreateDefaultConfig(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
 	assert.NotNil(t, cfg, "failed to create default config")
-	assert.NoError(t, configtest.CheckConfigStruct(cfg))
+	require.NoError(t, componenttest.CheckConfigStruct(cfg))
 	ocfg, ok := factory.CreateDefaultConfig().(*Config)
 	assert.True(t, ok)
-	assert.Equal(t, ocfg.HTTPClientSettings.Endpoint, "")
-	assert.Equal(t, ocfg.HTTPClientSettings.Timeout, 30*time.Second, "default timeout is 30 second")
-	assert.Equal(t, ocfg.RetrySettings.Enabled, true, "default retry is enabled")
-	assert.Equal(t, ocfg.RetrySettings.MaxElapsedTime, 300*time.Second, "default retry MaxElapsedTime")
-	assert.Equal(t, ocfg.RetrySettings.InitialInterval, 5*time.Second, "default retry InitialInterval")
-	assert.Equal(t, ocfg.RetrySettings.MaxInterval, 30*time.Second, "default retry MaxInterval")
-	assert.Equal(t, ocfg.QueueSettings.Enabled, true, "default sending queue is enabled")
-	assert.Equal(t, ocfg.Compression, configcompression.Gzip)
+	assert.Equal(t, "", ocfg.ClientConfig.Endpoint)
+	assert.Equal(t, 30*time.Second, ocfg.ClientConfig.Timeout, "default timeout is 30 second")
+	assert.True(t, ocfg.RetryConfig.Enabled, "default retry is enabled")
+	assert.Equal(t, 300*time.Second, ocfg.RetryConfig.MaxElapsedTime, "default retry MaxElapsedTime")
+	assert.Equal(t, 5*time.Second, ocfg.RetryConfig.InitialInterval, "default retry InitialInterval")
+	assert.Equal(t, 30*time.Second, ocfg.RetryConfig.MaxInterval, "default retry MaxInterval")
+	assert.True(t, ocfg.QueueConfig.Enabled, "default sending queue is enabled")
+	assert.Equal(t, EncodingProto, ocfg.Encoding)
+	assert.Equal(t, configcompression.TypeGzip, ocfg.Compression)
 }
 
-func TestCreateMetricsExporter(t *testing.T) {
+func TestCreateMetrics(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
-	cfg.HTTPClientSettings.Endpoint = "http://" + testutil.GetAvailableLocalAddress(t)
+	cfg.ClientConfig.Endpoint = "http://" + testutil.GetAvailableLocalAddress(t)
 
-	set := componenttest.NewNopExporterCreateSettings()
-	oexp, err := factory.CreateMetricsExporter(context.Background(), set, cfg)
-	require.Nil(t, err)
+	set := exportertest.NewNopSettings()
+	oexp, err := factory.CreateMetrics(context.Background(), set, cfg)
+	require.NoError(t, err)
 	require.NotNil(t, oexp)
 }
 
-func TestCreateTracesExporter(t *testing.T) {
+func clientConfig(endpoint string, headers map[string]configopaque.String, tlsSetting configtls.ClientConfig, compression configcompression.Type) confighttp.ClientConfig {
+	clientConfig := confighttp.NewDefaultClientConfig()
+	clientConfig.TLSSetting = tlsSetting
+	clientConfig.Compression = compression
+	if endpoint != "" {
+		clientConfig.Endpoint = endpoint
+	}
+	if headers != nil {
+		clientConfig.Headers = headers
+	}
+	return clientConfig
+}
+
+func TestCreateTraces(t *testing.T) {
+	var configCompression configcompression.Type
 	endpoint := "http://" + testutil.GetAvailableLocalAddress(t)
 
 	tests := []struct {
 		name             string
-		config           Config
+		config           *Config
 		mustFailOnCreate bool
 		mustFailOnStart  bool
 	}{
 		{
 			name: "NoEndpoint",
-			config: Config{
-				ExporterSettings: config.NewExporterSettings(config.NewComponentID(typeStr)),
-				HTTPClientSettings: confighttp.HTTPClientSettings{
-					Endpoint: "",
-				},
+			config: &Config{
+				ClientConfig: clientConfig("", nil, configtls.ClientConfig{}, configCompression),
 			},
 			mustFailOnCreate: true,
 		},
 		{
 			name: "UseSecure",
-			config: Config{
-				ExporterSettings: config.NewExporterSettings(config.NewComponentID(typeStr)),
-				HTTPClientSettings: confighttp.HTTPClientSettings{
-					Endpoint: endpoint,
-					TLSSetting: configtls.TLSClientSetting{
-						Insecure: false,
-					},
-				},
+			config: &Config{
+				ClientConfig: clientConfig(endpoint, nil, configtls.ClientConfig{
+					Insecure: false,
+				}, configCompression),
 			},
 		},
 		{
 			name: "Headers",
-			config: Config{
-				ExporterSettings: config.NewExporterSettings(config.NewComponentID(typeStr)),
-				HTTPClientSettings: confighttp.HTTPClientSettings{
-					Endpoint: endpoint,
-					Headers: map[string]string{
-						"hdr1": "val1",
-						"hdr2": "val2",
-					},
-				},
+			config: &Config{
+				ClientConfig: clientConfig(endpoint, map[string]configopaque.String{
+					"hdr1": "val1",
+					"hdr2": "val2",
+				}, configtls.ClientConfig{}, configCompression),
 			},
 		},
 		{
 			name: "CaCert",
-			config: Config{
-				ExporterSettings: config.NewExporterSettings(config.NewComponentID(typeStr)),
-				HTTPClientSettings: confighttp.HTTPClientSettings{
-					Endpoint: endpoint,
-					TLSSetting: configtls.TLSClientSetting{
-						TLSSetting: configtls.TLSSetting{
-							CAFile: filepath.Join("testdata", "test_cert.pem"),
-						},
+			config: &Config{
+				ClientConfig: clientConfig(endpoint, nil, configtls.ClientConfig{
+					Config: configtls.Config{
+						CAFile: filepath.Join("testdata", "test_cert.pem"),
 					},
-				},
+				}, configCompression),
 			},
 		},
 		{
 			name: "CertPemFileError",
-			config: Config{
-				ExporterSettings: config.NewExporterSettings(config.NewComponentID(typeStr)),
-				HTTPClientSettings: confighttp.HTTPClientSettings{
-					Endpoint: endpoint,
-					TLSSetting: configtls.TLSClientSetting{
-						TLSSetting: configtls.TLSSetting{
-							CAFile: "nosuchfile",
-						},
+			config: &Config{
+				ClientConfig: clientConfig(endpoint, nil, configtls.ClientConfig{
+					Config: configtls.Config{
+						CAFile: "nosuchfile",
 					},
 				},
+					configCompression),
 			},
 			mustFailOnCreate: false,
 			mustFailOnStart:  true,
 		},
 		{
 			name: "NoneCompression",
-			config: Config{
-				ExporterSettings: config.NewExporterSettings(config.NewComponentID(typeStr)),
-				HTTPClientSettings: confighttp.HTTPClientSettings{
-					Endpoint:    endpoint,
-					Compression: "none",
-				},
+			config: &Config{
+				ClientConfig: clientConfig(endpoint, nil, configtls.ClientConfig{}, "none"),
 			},
 		},
 		{
 			name: "GzipCompression",
-			config: Config{
-				ExporterSettings: config.NewExporterSettings(config.NewComponentID(typeStr)),
-				HTTPClientSettings: confighttp.HTTPClientSettings{
-					Endpoint:    endpoint,
-					Compression: configcompression.Gzip,
-				},
+			config: &Config{
+				ClientConfig: clientConfig(endpoint, nil, configtls.ClientConfig{}, configcompression.TypeGzip),
 			},
 		},
 		{
 			name: "SnappyCompression",
-			config: Config{
-				ExporterSettings: config.NewExporterSettings(config.NewComponentID(typeStr)),
-				HTTPClientSettings: confighttp.HTTPClientSettings{
-					Endpoint:    endpoint,
-					Compression: configcompression.Snappy,
-				},
+			config: &Config{
+				ClientConfig: clientConfig(endpoint, nil, configtls.ClientConfig{}, configcompression.TypeSnappy),
 			},
 		},
 		{
 			name: "ZstdCompression",
-			config: Config{
-				ExporterSettings: config.NewExporterSettings(config.NewComponentID(typeStr)),
-				HTTPClientSettings: confighttp.HTTPClientSettings{
-					Endpoint:    endpoint,
-					Compression: configcompression.Zstd,
-				},
+			config: &Config{
+				ClientConfig: clientConfig(endpoint, nil, configtls.ClientConfig{}, configcompression.TypeZstd),
+			},
+		},
+		{
+			name: "ProtoEncoding",
+			config: &Config{
+				Encoding:     EncodingProto,
+				ClientConfig: clientConfig(endpoint, nil, configtls.ClientConfig{}, configCompression),
+			},
+		},
+		{
+			name: "JSONEncoding",
+			config: &Config{
+				Encoding:     EncodingJSON,
+				ClientConfig: clientConfig(endpoint, nil, configtls.ClientConfig{}, configCompression),
 			},
 		},
 	}
@@ -179,37 +164,71 @@ func TestCreateTracesExporter(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			factory := NewFactory()
-			set := componenttest.NewNopExporterCreateSettings()
-			consumer, err := factory.CreateTracesExporter(context.Background(), set, &tt.config)
+			set := exportertest.NewNopSettings()
+			consumer, err := factory.CreateTraces(context.Background(), set, tt.config)
 
 			if tt.mustFailOnCreate {
 				assert.Error(t, err)
 				return
 			}
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.NotNil(t, consumer)
 			err = consumer.Start(context.Background(), componenttest.NewNopHost())
 			if tt.mustFailOnStart {
-				assert.Error(t, err)
+				require.Error(t, err)
 			}
 
 			err = consumer.Shutdown(context.Background())
 			if err != nil {
 				// Since the endpoint of OTLP exporter doesn't actually exist,
 				// exporter may already stop because it cannot connect.
-				assert.Equal(t, err.Error(), "rpc error: code = Canceled desc = grpc: the client connection is closing")
+				assert.Equal(t, "rpc error: code = Canceled desc = grpc: the client connection is closing", err.Error())
 			}
 		})
 	}
 }
 
-func TestCreateLogsExporter(t *testing.T) {
+func TestCreateLogs(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
-	cfg.HTTPClientSettings.Endpoint = "http://" + testutil.GetAvailableLocalAddress(t)
+	cfg.ClientConfig.Endpoint = "http://" + testutil.GetAvailableLocalAddress(t)
 
-	set := componenttest.NewNopExporterCreateSettings()
-	oexp, err := factory.CreateLogsExporter(context.Background(), set, cfg)
-	require.Nil(t, err)
+	set := exportertest.NewNopSettings()
+	oexp, err := factory.CreateLogs(context.Background(), set, cfg)
+	require.NoError(t, err)
 	require.NotNil(t, oexp)
+}
+
+func TestCreateProfiles(t *testing.T) {
+	factory := NewFactory()
+	cfg := factory.CreateDefaultConfig().(*Config)
+	cfg.ClientConfig.Endpoint = "http://" + testutil.GetAvailableLocalAddress(t)
+
+	set := exportertest.NewNopSettings()
+	oexp, err := factory.(xexporter.Factory).CreateProfiles(context.Background(), set, cfg)
+	require.NoError(t, err)
+	require.NotNil(t, oexp)
+}
+
+func TestComposeSignalURL(t *testing.T) {
+	factory := NewFactory()
+	cfg := factory.CreateDefaultConfig().(*Config)
+
+	// Has slash at end
+	cfg.ClientConfig.Endpoint = "http://localhost:4318/"
+	url, err := composeSignalURL(cfg, "", "traces", "v1")
+	require.NoError(t, err)
+	assert.Equal(t, "http://localhost:4318/v1/traces", url)
+
+	// No slash at end
+	cfg.ClientConfig.Endpoint = "http://localhost:4318"
+	url, err = composeSignalURL(cfg, "", "traces", "v1")
+	require.NoError(t, err)
+	assert.Equal(t, "http://localhost:4318/v1/traces", url)
+
+	// Different version
+	cfg.ClientConfig.Endpoint = "http://localhost:4318"
+	url, err = composeSignalURL(cfg, "", "traces", "v2")
+	require.NoError(t, err)
+	assert.Equal(t, "http://localhost:4318/v2/traces", url)
 }

@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package confmaptest
 
@@ -38,7 +27,14 @@ func TestLoadConfInvalidYAML(t *testing.T) {
 func TestLoadConf(t *testing.T) {
 	cfg, err := LoadConf(filepath.Join("testdata", "simple.yaml"))
 	require.NoError(t, err)
-	assert.Equal(t, map[string]interface{}{"floating": 3.14}, cfg.ToStringMap())
+	assert.Equal(t, map[string]any{"floating": 3.14}, cfg.ToStringMap())
+}
+
+func TestToStringMapSanitizeEmptySlice(t *testing.T) {
+	cfg, err := LoadConf(filepath.Join("testdata", "empty-slice.yaml"))
+	require.NoError(t, err)
+	var nilSlice []any
+	assert.Equal(t, map[string]any{"slice": nilSlice}, cfg.ToStringMap())
 }
 
 func TestValidateProviderScheme(t *testing.T) {
@@ -46,9 +42,9 @@ func TestValidateProviderScheme(t *testing.T) {
 	assert.NoError(t, ValidateProviderScheme(&schemeProvider{scheme: "s3"}))
 	assert.NoError(t, ValidateProviderScheme(&schemeProvider{scheme: "a.l-l+"}))
 	// Too short.
-	assert.Error(t, ValidateProviderScheme(&schemeProvider{scheme: "a"}))
+	require.Error(t, ValidateProviderScheme(&schemeProvider{scheme: "a"}))
 	// Invalid first character.
-	assert.Error(t, ValidateProviderScheme(&schemeProvider{scheme: "3s"}))
+	require.Error(t, ValidateProviderScheme(&schemeProvider{scheme: "3s"}))
 	// Invalid underscore character.
 	assert.Error(t, ValidateProviderScheme(&schemeProvider{scheme: "all_"}))
 }
@@ -65,6 +61,6 @@ func (s schemeProvider) Scheme() string {
 	return s.scheme
 }
 
-func (s schemeProvider) Shutdown(ctx context.Context) error {
+func (s schemeProvider) Shutdown(context.Context) error {
 	return nil
 }

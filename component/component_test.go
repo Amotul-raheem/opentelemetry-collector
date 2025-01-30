@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package component
 
@@ -20,7 +9,86 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestBaseInternal(t *testing.T) {
-	base := baseFactory{}
-	assert.NotPanics(t, base.unexportedFactoryFunc)
+func TestKindString(t *testing.T) {
+	assert.Equal(t, "", Kind(0).String())
+	assert.Equal(t, "Receiver", KindReceiver.String())
+	assert.Equal(t, "Processor", KindProcessor.String())
+	assert.Equal(t, "Exporter", KindExporter.String())
+	assert.Equal(t, "Extension", KindExtension.String())
+	assert.Equal(t, "Connector", KindConnector.String())
+	assert.Equal(t, "", Kind(100).String())
+}
+
+func TestStabilityLevelUnmarshal(t *testing.T) {
+	tests := []struct {
+		input       string
+		output      StabilityLevel
+		expectedErr string
+	}{
+		{
+			input:  "Undefined",
+			output: StabilityLevelUndefined,
+		},
+		{
+			input:  "UnmaintaineD",
+			output: StabilityLevelUnmaintained,
+		},
+		{
+			input:  "DepreCated",
+			output: StabilityLevelDeprecated,
+		},
+		{
+			input:  "Development",
+			output: StabilityLevelDevelopment,
+		},
+		{
+			input:  "alpha",
+			output: StabilityLevelAlpha,
+		},
+		{
+			input:  "BETA",
+			output: StabilityLevelBeta,
+		},
+		{
+			input:  "sTABLe",
+			output: StabilityLevelStable,
+		},
+		{
+			input:       "notfound",
+			expectedErr: "unsupported stability level: \"notfound\"",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.input, func(t *testing.T) {
+			var sl StabilityLevel
+			err := sl.UnmarshalText([]byte(test.input))
+			if test.expectedErr != "" {
+				assert.EqualError(t, err, test.expectedErr)
+			} else {
+				assert.Equal(t, test.output, sl)
+			}
+		})
+	}
+}
+
+func TestStabilityLevelString(t *testing.T) {
+	assert.Equal(t, "Undefined", StabilityLevelUndefined.String())
+	assert.Equal(t, "Unmaintained", StabilityLevelUnmaintained.String())
+	assert.Equal(t, "Deprecated", StabilityLevelDeprecated.String())
+	assert.Equal(t, "Development", StabilityLevelDevelopment.String())
+	assert.Equal(t, "Alpha", StabilityLevelAlpha.String())
+	assert.Equal(t, "Beta", StabilityLevelBeta.String())
+	assert.Equal(t, "Stable", StabilityLevelStable.String())
+	assert.Equal(t, "", StabilityLevel(100).String())
+}
+
+func TestStabilityLevelLogMessage(t *testing.T) {
+	assert.Equal(t, "Stability level of component is undefined", StabilityLevelUndefined.LogMessage())
+	assert.Equal(t, "Unmaintained component. Actively looking for contributors. Component will become deprecated after 3 months of remaining unmaintained.", StabilityLevelUnmaintained.LogMessage())
+	assert.Equal(t, "Deprecated component. Will be removed in future releases.", StabilityLevelDeprecated.LogMessage())
+	assert.Equal(t, "Development component. May change in the future.", StabilityLevelDevelopment.LogMessage())
+	assert.Equal(t, "Alpha component. May change in the future.", StabilityLevelAlpha.LogMessage())
+	assert.Equal(t, "Beta component. May change in the future.", StabilityLevelBeta.LogMessage())
+	assert.Equal(t, "Stable component.", StabilityLevelStable.LogMessage())
+	assert.Equal(t, "Stability level of component is undefined", StabilityLevel(100).LogMessage())
 }

@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package pmetric
 
@@ -24,14 +13,14 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 )
 
-func TestProtoMetricsUnmarshaler_error(t *testing.T) {
-	p := NewProtoUnmarshaler()
+func TestProtoMetricsUnmarshalerError(t *testing.T) {
+	p := &ProtoUnmarshaler{}
 	_, err := p.UnmarshalMetrics([]byte("+$%"))
 	assert.Error(t, err)
 }
 
 func TestProtoSizer(t *testing.T) {
-	marshaler := NewProtoMarshaler()
+	marshaler := &ProtoMarshaler{}
 	md := NewMetrics()
 	md.ResourceMetrics().AppendEmpty().ScopeMetrics().AppendEmpty().Metrics().AppendEmpty().SetName("foo")
 
@@ -42,30 +31,29 @@ func TestProtoSizer(t *testing.T) {
 	assert.Equal(t, len(bytes), size)
 }
 
-func TestProtoSizer_withNil(t *testing.T) {
-	sizer := NewProtoMarshaler().(Sizer)
-
+func TestProtoSizerEmptyMetrics(t *testing.T) {
+	sizer := &ProtoMarshaler{}
 	assert.Equal(t, 0, sizer.MetricsSize(NewMetrics()))
 }
 
 func BenchmarkMetricsToProto(b *testing.B) {
-	marshaler := NewProtoMarshaler()
+	marshaler := &ProtoMarshaler{}
 	metrics := generateBenchmarkMetrics(128)
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
 		buf, err := marshaler.MarshalMetrics(metrics)
 		require.NoError(b, err)
-		assert.NotEqual(b, 0, len(buf))
+		assert.NotEmpty(b, buf)
 	}
 }
 
 func BenchmarkMetricsFromProto(b *testing.B) {
-	marshaler := NewProtoMarshaler()
-	unmarshaler := NewProtoUnmarshaler()
+	marshaler := &ProtoMarshaler{}
+	unmarshaler := &ProtoUnmarshaler{}
 	baseMetrics := generateBenchmarkMetrics(128)
 	buf, err := marshaler.MarshalMetrics(baseMetrics)
 	require.NoError(b, err)
-	assert.NotEqual(b, 0, len(buf))
+	assert.NotEmpty(b, buf)
 	b.ResetTimer()
 	b.ReportAllocs()
 	for n := 0; n < b.N; n++ {

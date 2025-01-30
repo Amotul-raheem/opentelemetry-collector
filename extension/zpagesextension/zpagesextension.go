@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package zpagesextension // import "go.opentelemetry.io/collector/extension/zpagesextension"
 
@@ -25,6 +14,7 @@ import (
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/component/componentstatus"
 )
 
 const (
@@ -35,7 +25,7 @@ type zpagesExtension struct {
 	config              *Config
 	telemetry           component.TelemetrySettings
 	zpagesSpanProcessor *zpages.SpanProcessor
-	server              http.Server
+	server              *http.Server
 	stopCh              chan struct{}
 }
 
@@ -54,7 +44,7 @@ type registerableTracerProvider interface {
 	UnregisterSpanProcessor(SpanProcessor trace.SpanProcessor)
 }
 
-func (zpe *zpagesExtension) Start(_ context.Context, host component.Host) error {
+func (zpe *zpagesExtension) Start(ctx context.Context, host component.Host) error {
 	zPagesMux := http.NewServeMux()
 
 	sdktracer, ok := zpe.telemetry.TracerProvider.(registerableTracerProvider)
@@ -78,19 +68,22 @@ func (zpe *zpagesExtension) Start(_ context.Context, host component.Host) error 
 
 	// Start the listener here so we can have earlier failure if port is
 	// already in use.
-	ln, err := zpe.config.TCPAddr.Listen()
+	ln, err := zpe.config.ToListener(ctx)
 	if err != nil {
 		return err
 	}
 
 	zpe.telemetry.Logger.Info("Starting zPages extension", zap.Any("config", zpe.config))
-	zpe.server = http.Server{Handler: zPagesMux}
+	zpe.server, err = zpe.config.ToServer(ctx, host, zpe.telemetry, zPagesMux)
+	if err != nil {
+		return err
+	}
 	zpe.stopCh = make(chan struct{})
 	go func() {
 		defer close(zpe.stopCh)
 
 		if errHTTP := zpe.server.Serve(ln); errHTTP != nil && !errors.Is(errHTTP, http.ErrServerClosed) {
-			host.ReportFatalError(errHTTP)
+			componentstatus.ReportStatus(host, componentstatus.NewFatalErrorEvent(errHTTP))
 		}
 	}()
 
@@ -98,6 +91,9 @@ func (zpe *zpagesExtension) Start(_ context.Context, host component.Host) error 
 }
 
 func (zpe *zpagesExtension) Shutdown(context.Context) error {
+	if zpe.server == nil {
+		return nil
+	}
 	err := zpe.server.Close()
 	if zpe.stopCh != nil {
 		<-zpe.stopCh

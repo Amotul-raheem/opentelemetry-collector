@@ -1,125 +1,125 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package configauth
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"go.opentelemetry.io/collector/component"
-	"go.opentelemetry.io/collector/config"
+	"go.opentelemetry.io/collector/extension"
+	"go.opentelemetry.io/collector/extension/auth"
 )
 
-func TestGetServerAuthenticator(t *testing.T) {
+var mockID = component.MustNewID("mock")
+
+func TestNewDefaultAuthentication(t *testing.T) {
+	auth := NewDefaultAuthentication()
+	assert.NotNil(t, auth)
+	assert.Empty(t, auth)
+}
+
+func TestGetServer(t *testing.T) {
 	testCases := []struct {
-		desc          string
-		authenticator component.Extension
+		name          string
+		authenticator extension.Extension
 		expected      error
 	}{
 		{
-			desc:          "obtain server authenticator",
-			authenticator: NewServerAuthenticator(),
+			name:          "obtain server authenticator",
+			authenticator: auth.NewServer(),
 			expected:      nil,
 		},
 		{
-			desc:          "not a server authenticator",
-			authenticator: &MockClientAuthenticator{},
-			expected:      errNotServerAuthenticator,
+			name:          "not a server authenticator",
+			authenticator: auth.NewClient(),
+			expected:      errNotServer,
 		},
 	}
-	for _, tC := range testCases {
-		t.Run(tC.desc, func(t *testing.T) {
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
 			// prepare
 			cfg := &Authentication{
-				AuthenticatorID: config.NewComponentID("mock"),
+				AuthenticatorID: mockID,
 			}
-			ext := map[config.ComponentID]component.Extension{
-				config.NewComponentID("mock"): tC.authenticator,
+			ext := map[component.ID]component.Component{
+				mockID: tt.authenticator,
 			}
 
-			authenticator, err := cfg.GetServerAuthenticator(ext)
+			authenticator, err := cfg.GetServerAuthenticator(context.Background(), ext)
 
 			// verify
-			if tC.expected != nil {
-				assert.ErrorIs(t, err, tC.expected)
+			if tt.expected != nil {
+				require.ErrorIs(t, err, tt.expected)
 				assert.Nil(t, authenticator)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				assert.NotNil(t, authenticator)
 			}
 		})
 	}
 }
 
-func TestGetServerAuthenticatorFails(t *testing.T) {
+func TestGetServerFails(t *testing.T) {
 	cfg := &Authentication{
-		AuthenticatorID: config.NewComponentID("does-not-exist"),
+		AuthenticatorID: component.MustNewID("does_not_exist"),
 	}
 
-	authenticator, err := cfg.GetServerAuthenticator(map[config.ComponentID]component.Extension{})
-	assert.ErrorIs(t, err, errAuthenticatorNotFound)
+	authenticator, err := cfg.GetServerAuthenticator(context.Background(), map[component.ID]component.Component{})
+	require.ErrorIs(t, err, errAuthenticatorNotFound)
 	assert.Nil(t, authenticator)
 }
 
-func TestGetClientAuthenticator(t *testing.T) {
+func TestGetClient(t *testing.T) {
 	testCases := []struct {
-		desc          string
-		authenticator component.Extension
+		name          string
+		authenticator extension.Extension
 		expected      error
 	}{
 		{
-			desc:          "obtain client authenticator",
-			authenticator: &MockClientAuthenticator{},
+			name:          "obtain client authenticator",
+			authenticator: auth.NewClient(),
 			expected:      nil,
 		},
 		{
-			desc:          "not a client authenticator",
-			authenticator: NewServerAuthenticator(),
-			expected:      errNotClientAuthenticator,
+			name:          "not a client authenticator",
+			authenticator: auth.NewServer(),
+			expected:      errNotClient,
 		},
 	}
-	for _, tC := range testCases {
-		t.Run(tC.desc, func(t *testing.T) {
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
 			// prepare
 			cfg := &Authentication{
-				AuthenticatorID: config.NewComponentID("mock"),
+				AuthenticatorID: mockID,
 			}
-			ext := map[config.ComponentID]component.Extension{
-				config.NewComponentID("mock"): tC.authenticator,
+			ext := map[component.ID]component.Component{
+				mockID: tt.authenticator,
 			}
 
-			authenticator, err := cfg.GetClientAuthenticator(ext)
+			authenticator, err := cfg.GetClientAuthenticator(context.Background(), ext)
 
 			// verify
-			if tC.expected != nil {
-				assert.ErrorIs(t, err, tC.expected)
+			if tt.expected != nil {
+				require.ErrorIs(t, err, tt.expected)
 				assert.Nil(t, authenticator)
 			} else {
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				assert.NotNil(t, authenticator)
 			}
 		})
 	}
 }
 
-func TestGetClientAuthenticatorFails(t *testing.T) {
+func TestGetClientFails(t *testing.T) {
 	cfg := &Authentication{
-		AuthenticatorID: config.NewComponentID("does-not-exist"),
+		AuthenticatorID: component.MustNewID("does_not_exist"),
 	}
-	authenticator, err := cfg.GetClientAuthenticator(map[config.ComponentID]component.Extension{})
-	assert.ErrorIs(t, err, errAuthenticatorNotFound)
+	authenticator, err := cfg.GetClientAuthenticator(context.Background(), map[component.ID]component.Component{})
+	require.ErrorIs(t, err, errAuthenticatorNotFound)
 	assert.Nil(t, authenticator)
 }

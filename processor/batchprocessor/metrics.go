@@ -1,78 +1,59 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package batchprocessor // import "go.opentelemetry.io/collector/processor/batchprocessor"
 
 import (
-	"go.opencensus.io/stats"
-	"go.opencensus.io/stats/view"
-	"go.opencensus.io/tag"
+	"context"
 
-	"go.opentelemetry.io/collector/internal/obsreportconfig/obsmetrics"
-	"go.opentelemetry.io/collector/obsreport"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+
+	"go.opentelemetry.io/collector/processor"
+	"go.opentelemetry.io/collector/processor/batchprocessor/internal/metadata"
+	"go.opentelemetry.io/collector/processor/internal"
 )
 
-var (
-	processorTagKey          = tag.MustNewKey(obsmetrics.ProcessorKey)
-	statBatchSizeTriggerSend = stats.Int64("batch_size_trigger_send", "Number of times the batch was sent due to a size trigger", stats.UnitDimensionless)
-	statTimeoutTriggerSend   = stats.Int64("timeout_trigger_send", "Number of times the batch was sent due to a timeout trigger", stats.UnitDimensionless)
-	statBatchSendSize        = stats.Int64("batch_send_size", "Number of units in the batch", stats.UnitDimensionless)
-	statBatchSendSizeBytes   = stats.Int64("batch_send_size_bytes", "Number of bytes in batch that was sent", stats.UnitBytes)
+type trigger int
+
+const (
+	triggerTimeout trigger = iota
+	triggerBatchSize
 )
 
-// MetricViews returns the metrics views related to batching
-func MetricViews() []*view.View {
-	processorTagKeys := []tag.Key{processorTagKey}
+type batchProcessorTelemetry struct {
+	exportCtx context.Context
 
-	countBatchSizeTriggerSendView := &view.View{
-		Name:        obsreport.BuildProcessorCustomMetricName(typeStr, statBatchSizeTriggerSend.Name()),
-		Measure:     statBatchSizeTriggerSend,
-		Description: statBatchSizeTriggerSend.Description(),
-		TagKeys:     processorTagKeys,
-		Aggregation: view.Sum(),
+	processorAttr    metric.MeasurementOption
+	telemetryBuilder *metadata.TelemetryBuilder
+}
+
+func newBatchProcessorTelemetry(set processor.Settings, currentMetadataCardinality func() int) (*batchProcessorTelemetry, error) {
+	attrs := metric.WithAttributeSet(attribute.NewSet(attribute.String(internal.ProcessorKey, set.ID.String())))
+
+	telemetryBuilder, err := metadata.NewTelemetryBuilder(
+		set.TelemetrySettings,
+		metadata.WithProcessorBatchMetadataCardinalityCallback(func() int64 { return int64(currentMetadataCardinality()) }, attrs),
+	)
+	if err != nil {
+		return nil, err
 	}
 
-	countTimeoutTriggerSendView := &view.View{
-		Name:        obsreport.BuildProcessorCustomMetricName(typeStr, statTimeoutTriggerSend.Name()),
-		Measure:     statTimeoutTriggerSend,
-		Description: statTimeoutTriggerSend.Description(),
-		TagKeys:     processorTagKeys,
-		Aggregation: view.Sum(),
+	return &batchProcessorTelemetry{
+		exportCtx:        context.Background(),
+		telemetryBuilder: telemetryBuilder,
+		processorAttr:    attrs,
+	}, nil
+}
+
+func (bpt *batchProcessorTelemetry) record(trigger trigger, sent, bytes int64) {
+	switch trigger {
+	case triggerBatchSize:
+		bpt.telemetryBuilder.ProcessorBatchBatchSizeTriggerSend.Add(bpt.exportCtx, 1, bpt.processorAttr)
+	case triggerTimeout:
+		bpt.telemetryBuilder.ProcessorBatchTimeoutTriggerSend.Add(bpt.exportCtx, 1, bpt.processorAttr)
 	}
 
-	distributionBatchSendSizeView := &view.View{
-		Name:        obsreport.BuildProcessorCustomMetricName(typeStr, statBatchSendSize.Name()),
-		Measure:     statBatchSendSize,
-		Description: statBatchSendSize.Description(),
-		TagKeys:     processorTagKeys,
-		Aggregation: view.Distribution(10, 25, 50, 75, 100, 250, 500, 750, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 20000, 30000, 50000, 100000),
-	}
-
-	distributionBatchSendSizeBytesView := &view.View{
-		Name:        obsreport.BuildProcessorCustomMetricName(typeStr, statBatchSendSizeBytes.Name()),
-		Measure:     statBatchSendSizeBytes,
-		Description: statBatchSendSizeBytes.Description(),
-		TagKeys:     processorTagKeys,
-		Aggregation: view.Distribution(10, 25, 50, 75, 100, 250, 500, 750, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 20000, 30000, 50000,
-			100_000, 200_000, 300_000, 400_000, 500_000, 600_000, 700_000, 800_00, 900_000,
-			1000_000, 2000_000, 3000_000, 4000_000, 5000_000, 6000_000, 7000_000, 8000_000, 9000_000),
-	}
-
-	return []*view.View{
-		countBatchSizeTriggerSendView,
-		countTimeoutTriggerSendView,
-		distributionBatchSendSizeView,
-		distributionBatchSendSizeBytesView,
-	}
+	bpt.telemetryBuilder.ProcessorBatchBatchSendSize.Record(bpt.exportCtx, sent, bpt.processorAttr)
+	bpt.telemetryBuilder.ProcessorBatchBatchSendSizeBytes.Record(bpt.exportCtx, bytes, bpt.processorAttr)
 }

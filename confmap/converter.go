@@ -1,22 +1,34 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package confmap // import "go.opentelemetry.io/collector/confmap"
 
 import (
 	"context"
+
+	"go.uber.org/zap"
 )
+
+// ConverterSettings are the settings to initialize a Converter.
+type ConverterSettings struct {
+	// Logger is a zap.Logger that will be passed to Converters.
+	// Converters should be able to rely on the Logger being non-nil;
+	// when instantiating a Converter with a ConverterFactory,
+	// nil Logger references should be replaced with a no-op Logger.
+	Logger *zap.Logger
+}
+
+// ConverterFactory defines a factory that can be used to instantiate
+// new instances of a Converter.
+type ConverterFactory = moduleFactory[Converter, ConverterSettings]
+
+// CreateConverterFunc is a function that creates a Converter instance.
+type CreateConverterFunc = createConfmapFunc[Converter, ConverterSettings]
+
+// NewConverterFactory can be used to create a ConverterFactory.
+func NewConverterFactory(f CreateConverterFunc) ConverterFactory {
+	return newConfmapModuleFactory(f)
+}
 
 // Converter is a converter interface for the confmap.Conf that allows distributions
 // (in the future components as well) to build backwards compatible config converters.

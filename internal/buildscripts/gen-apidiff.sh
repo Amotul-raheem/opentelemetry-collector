@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+#
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
 
 # This script is used to create API state snapshots used to validate releases are not breaking backwards compatibility.
 
@@ -14,6 +17,7 @@ usage() {
 dry_run=false
 package=""
 output_dir="./internal/data/apidiff"
+apidiff_cmd="$(git rev-parse --show-toplevel)/.tools/apidiff"
 
 
 while getopts "dp:o:" o; do
@@ -34,7 +38,7 @@ while getopts "dp:o:" o; do
 done
 shift $((OPTIND-1))
 
-if [ -z $package ]; then
+if [ -z "$package" ]; then
   usage
 fi
 
@@ -53,9 +57,9 @@ clean_up() {
 }
 trap clean_up EXIT
 
-mkdir -p $tmp_dir/$package
+mkdir -p "$tmp_dir/$package"
 
-apidiff -w $tmp_dir/$package/apidiff.state $package
+${apidiff_cmd} -w "$tmp_dir"/"$package"/apidiff.state "$package"
 
 # Copy files if not in dry-run mode.
 if [ $dry_run = false ]; then

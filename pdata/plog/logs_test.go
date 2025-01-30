@@ -1,30 +1,21 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package plog
 
 import (
 	"testing"
+	"time"
 
 	gogoproto "github.com/gogo/protobuf/proto"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	goproto "google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	"go.opentelemetry.io/collector/pdata/internal"
 	otlpcollectorlog "go.opentelemetry.io/collector/pdata/internal/data/protogen/collector/logs/v1"
 	otlplogs "go.opentelemetry.io/collector/pdata/internal/data/protogen/logs/v1"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 )
 
 func TestLogRecordCount(t *testing.T) {
@@ -90,46 +81,94 @@ func TestResourceLogsWireCompatibility(t *testing.T) {
 
 	// Generate ResourceLogs as pdata struct.
 	logs := NewLogs()
-	internal.FillTestResourceLogsSlice(internal.ResourceLogsSlice(logs.ResourceLogs()))
+	fillTestResourceLogsSlice(logs.ResourceLogs())
 
 	// Marshal its underlying ProtoBuf to wire.
 	wire1, err := gogoproto.Marshal(logs.getOrig())
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, wire1)
 
 	// Unmarshal from the wire to OTLP Protobuf in goproto's representation.
 	var goprotoMessage emptypb.Empty
 	err = goproto.Unmarshal(wire1, &goprotoMessage)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Marshal to the wire again.
 	wire2, err := goproto.Marshal(&goprotoMessage)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.NotNil(t, wire2)
 
 	// Unmarshal from the wire into gogoproto's representation.
 	var gogoprotoRS2 otlpcollectorlog.ExportLogsServiceRequest
 	err = gogoproto.Unmarshal(wire2, &gogoprotoRS2)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Now compare that the original and final ProtoBuf messages are the same.
 	// This proves that goproto and gogoproto marshaling/unmarshaling are wire compatible.
 	assert.EqualValues(t, logs.getOrig(), &gogoprotoRS2)
 }
 
-func TestLogsMoveTo(t *testing.T) {
-	logs := NewLogs()
-	internal.FillTestResourceLogsSlice(internal.ResourceLogsSlice(logs.ResourceLogs()))
-	dest := NewLogs()
-	logs.MoveTo(dest)
-	assert.EqualValues(t, NewLogs(), logs)
-	assert.EqualValues(t, ResourceLogsSlice(internal.GenerateTestResourceLogsSlice()), dest.ResourceLogs())
-}
-
 func TestLogsCopyTo(t *testing.T) {
 	logs := NewLogs()
-	internal.FillTestResourceLogsSlice(internal.ResourceLogsSlice(logs.ResourceLogs()))
+	fillTestResourceLogsSlice(logs.ResourceLogs())
 	logsCopy := NewLogs()
 	logs.CopyTo(logsCopy)
 	assert.EqualValues(t, logs, logsCopy)
+}
+
+func TestReadOnlyLogsInvalidUsage(t *testing.T) {
+	logs := NewLogs()
+	assert.False(t, logs.IsReadOnly())
+	res := logs.ResourceLogs().AppendEmpty().Resource()
+	res.Attributes().PutStr("k1", "v1")
+	logs.MarkReadOnly()
+	assert.True(t, logs.IsReadOnly())
+	assert.Panics(t, func() { res.Attributes().PutStr("k2", "v2") })
+}
+
+func BenchmarkLogsUsage(b *testing.B) {
+	logs := NewLogs()
+	fillTestResourceLogsSlice(logs.ResourceLogs())
+
+	ts := pcommon.NewTimestampFromTime(time.Now())
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for bb := 0; bb < b.N; bb++ {
+		for i := 0; i < logs.ResourceLogs().Len(); i++ {
+			rl := logs.ResourceLogs().At(i)
+			res := rl.Resource()
+			res.Attributes().PutStr("foo", "bar")
+			v, ok := res.Attributes().Get("foo")
+			assert.True(b, ok)
+			assert.Equal(b, "bar", v.Str())
+			v.SetStr("new-bar")
+			assert.Equal(b, "new-bar", v.Str())
+			res.Attributes().Remove("foo")
+			for j := 0; j < rl.ScopeLogs().Len(); j++ {
+				sl := rl.ScopeLogs().At(j)
+				sl.Scope().SetName("new_test_name")
+				assert.Equal(b, "new_test_name", sl.Scope().Name())
+				for k := 0; k < sl.LogRecords().Len(); k++ {
+					lr := sl.LogRecords().At(k)
+					lr.Body().SetStr("new_body")
+					assert.Equal(b, "new_body", lr.Body().Str())
+					lr.SetTimestamp(ts)
+					assert.Equal(b, ts, lr.Timestamp())
+				}
+				lr := sl.LogRecords().AppendEmpty()
+				lr.Body().SetStr("another_log_record")
+				lr.SetTimestamp(ts)
+				lr.SetObservedTimestamp(ts)
+				lr.SetSeverityText("info")
+				lr.SetSeverityNumber(SeverityNumberInfo)
+				lr.Attributes().PutStr("foo", "bar")
+				lr.SetSpanID([8]byte{1, 2, 3, 4, 5, 6, 7, 8})
+				sl.LogRecords().RemoveIf(func(lr LogRecord) bool {
+					return lr.Body().Str() == "another_log_record"
+				})
+			}
+		}
+	}
 }

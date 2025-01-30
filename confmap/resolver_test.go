@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package confmap
 
@@ -19,19 +8,21 @@ import (
 	"errors"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 type mockProvider struct {
-	scheme string
-	retM   interface{}
-	errR   error
-	errS   error
-	errW   error
-	errC   error
+	scheme    string
+	retM      any
+	errR      error
+	errS      error
+	errW      error
+	closeFunc func(ctx context.Context) error
 }
 
 func (m *mockProvider) Retrieve(_ context.Context, _ string, watcher WatcherFunc) (*Retrieved, error) {
@@ -43,7 +34,7 @@ func (m *mockProvider) Retrieve(_ context.Context, _ string, watcher WatcherFunc
 	}
 
 	watcher(&ChangeEvent{Error: m.errW})
-	return NewRetrieved(m.retM, WithRetrievedClose(func(ctx context.Context) error { return m.errC }))
+	return NewRetrieved(m.retM, WithRetrievedClose(m.closeFunc))
 }
 
 func (m *mockProvider) Scheme() string {
@@ -57,22 +48,49 @@ func (m *mockProvider) Shutdown(context.Context) error {
 	return m.errS
 }
 
-type fakeProvider struct {
-	scheme string
-	ret    func(ctx context.Context, uri string, watcher WatcherFunc) (*Retrieved, error)
-}
-
-func newFileProvider(t testing.TB) Provider {
-	return newFakeProvider("file", func(_ context.Context, uri string, _ WatcherFunc) (*Retrieved, error) {
-		return NewRetrieved(newConfFromFile(t, uri[5:]))
+func newMockProvider(m *mockProvider) ProviderFactory {
+	return NewProviderFactory(func(_ ProviderSettings) Provider {
+		return m
 	})
 }
 
-func newFakeProvider(scheme string, ret func(ctx context.Context, uri string, watcher WatcherFunc) (*Retrieved, error)) Provider {
-	return &fakeProvider{
+type fakeProvider struct {
+	scheme string
+	ret    func(ctx context.Context, uri string, watcher WatcherFunc) (*Retrieved, error)
+	logger *zap.Logger
+}
+
+func newFileProvider(tb testing.TB) ProviderFactory {
+	return newFakeProvider("file", func(_ context.Context, uri string, _ WatcherFunc) (*Retrieved, error) {
+		return NewRetrieved(newConfFromFile(tb, uri[5:]))
+	})
+}
+
+func newFakeProvider(scheme string, ret func(ctx context.Context, uri string, watcher WatcherFunc) (*Retrieved, error)) ProviderFactory {
+	return NewProviderFactory(func(ps ProviderSettings) Provider {
+		return &fakeProvider{
+			scheme: scheme,
+			ret:    ret,
+			logger: ps.Logger,
+		}
+	})
+}
+
+func newObservableFileProvider(tb testing.TB) (ProviderFactory, *fakeProvider) {
+	return newObservableProvider("file", func(_ context.Context, uri string, _ WatcherFunc) (*Retrieved, error) {
+		return NewRetrieved(newConfFromFile(tb, uri[5:]))
+	})
+}
+
+func newObservableProvider(scheme string, ret func(ctx context.Context, uri string, watcher WatcherFunc) (*Retrieved, error)) (ProviderFactory, *fakeProvider) {
+	fp := &fakeProvider{
 		scheme: scheme,
 		ret:    ret,
 	}
+	return NewProviderFactory(func(ps ProviderSettings) Provider {
+		fp.logger = ps.Logger
+		return fp
+	}), fp
 }
 
 func (f *fakeProvider) Retrieve(ctx context.Context, uri string, watcher WatcherFunc) (*Retrieved, error) {
@@ -95,9 +113,14 @@ func (m *mockConverter) Convert(context.Context, *Conf) error {
 	return errors.New("converter_err")
 }
 
-func TestNewResolverInvalidScheme(t *testing.T) {
-	_, err := NewResolver(ResolverSettings{URIs: []string{"s_3:has invalid char"}, Providers: makeMapProvidersMap(&mockProvider{scheme: "s_3"})})
+func TestNewResolverInvalidSchemeInURI(t *testing.T) {
+	_, err := NewResolver(ResolverSettings{URIs: []string{"s_3:has invalid char"}, ProviderFactories: []ProviderFactory{newMockProvider(&mockProvider{scheme: "s3"})}})
 	assert.EqualError(t, err, `invalid uri: "s_3:has invalid char"`)
+}
+
+func TestNewResolverDuplicateScheme(t *testing.T) {
+	_, err := NewResolver(ResolverSettings{URIs: []string{"mock:something"}, ProviderFactories: []ProviderFactory{newMockProvider(&mockProvider{scheme: "mock"}), newMockProvider(&mockProvider{scheme: "mock"})}})
+	assert.EqualError(t, err, `duplicate 'confmap.Provider' scheme "mock"`)
 }
 
 func TestResolverErrors(t *testing.T) {
@@ -106,16 +129,28 @@ func TestResolverErrors(t *testing.T) {
 		locations         []string
 		providers         []Provider
 		converters        []Converter
+		defaultScheme     string
+		expectBuildErr    bool
 		expectResolveErr  bool
 		expectWatchErr    bool
 		expectCloseErr    bool
 		expectShutdownErr bool
 	}{
 		{
-			name:             "unsupported location scheme",
-			locations:        []string{"mock:", "notsupported:"},
-			providers:        []Provider{&mockProvider{}},
-			expectResolveErr: true,
+			name:           "unsupported location scheme",
+			locations:      []string{"mock:", "notsupported:"},
+			providers:      []Provider{&mockProvider{}},
+			expectBuildErr: true,
+		},
+		{
+			name:      "default scheme not found",
+			locations: []string{"mock:", "err:"},
+			providers: []Provider{
+				&mockProvider{},
+				&mockProvider{scheme: "err", errR: errors.New("retrieve_err")},
+			},
+			defaultScheme:  "missing",
+			expectBuildErr: true,
 		},
 		{
 			name:      "retrieve location config error",
@@ -127,7 +162,7 @@ func TestResolverErrors(t *testing.T) {
 			expectResolveErr: true,
 		},
 		{
-			name:      "retrieve location not convertable to Conf",
+			name:      "retrieve location not convertible to Conf",
 			locations: []string{"mock:", "err:"},
 			providers: []Provider{
 				&mockProvider{},
@@ -147,7 +182,7 @@ func TestResolverErrors(t *testing.T) {
 			locations: []string{"mock:", "err:"},
 			providers: []Provider{
 				&mockProvider{},
-				&mockProvider{scheme: "err", retM: map[string]interface{}{}, errW: errors.New("watch_err")},
+				&mockProvider{scheme: "err", retM: map[string]any{}, errW: errors.New("watch_err")},
 			},
 			expectWatchErr: true,
 		},
@@ -156,7 +191,7 @@ func TestResolverErrors(t *testing.T) {
 			locations: []string{"mock:", "err:"},
 			providers: []Provider{
 				&mockProvider{},
-				&mockProvider{scheme: "err", retM: map[string]interface{}{}, errC: errors.New("close_err")},
+				&mockProvider{scheme: "err", retM: map[string]any{}, closeFunc: func(context.Context) error { return errors.New("close_err") }},
 			},
 			expectCloseErr: true,
 		},
@@ -165,15 +200,29 @@ func TestResolverErrors(t *testing.T) {
 			locations: []string{"mock:", "err:"},
 			providers: []Provider{
 				&mockProvider{},
-				&mockProvider{scheme: "err", retM: map[string]interface{}{}, errS: errors.New("close_err")},
+				&mockProvider{scheme: "err", retM: map[string]any{}, errS: errors.New("close_err")},
 			},
 			expectShutdownErr: true,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resolver, err := NewResolver(ResolverSettings{URIs: tt.locations, Providers: makeMapProvidersMap(tt.providers...), Converters: tt.converters})
-			assert.NoError(t, err)
+			mockProviderFuncs := make([]ProviderFactory, len(tt.providers))
+			for i, provider := range tt.providers {
+				p := provider
+				mockProviderFuncs[i] = NewProviderFactory(func(_ ProviderSettings) Provider { return p })
+			}
+			converterFuncs := make([]ConverterFactory, len(tt.converters))
+			for i, converter := range tt.converters {
+				c := converter
+				converterFuncs[i] = NewConverterFactory(func(_ ConverterSettings) Converter { return c })
+			}
+			resolver, err := NewResolver(ResolverSettings{URIs: tt.locations, ProviderFactories: mockProviderFuncs, DefaultScheme: tt.defaultScheme, ConverterFactories: converterFuncs})
+			if tt.expectBuildErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
 
 			_, errN := resolver.Resolve(context.Background())
 			if tt.expectResolveErr {
@@ -208,9 +257,10 @@ func TestResolverErrors(t *testing.T) {
 
 func TestBackwardsCompatibilityForFilePath(t *testing.T) {
 	tests := []struct {
-		name       string
-		location   string
-		errMessage string
+		name           string
+		location       string
+		errMessage     string
+		expectBuildErr bool
 	}{
 		{
 			name:       "unix",
@@ -238,257 +288,147 @@ func TestBackwardsCompatibilityForFilePath(t *testing.T) {
 			errMessage: `file:C:\test`,
 		},
 		{
-			name:       "invalid_scheme",
-			location:   `LL:\test`,
-			errMessage: `scheme "LL" is not supported for uri "LL:\\test"`,
+			name:           "invalid_scheme",
+			location:       `LL:\test`,
+			expectBuildErr: true,
 		},
 	}
 	for _, tt := range tests {
-		resolver, err := NewResolver(ResolverSettings{
-			URIs: []string{tt.location},
-			Providers: makeMapProvidersMap(newFakeProvider("file", func(_ context.Context, uri string, _ WatcherFunc) (*Retrieved, error) {
-				return nil, errors.New(uri)
-			})),
-			Converters: nil})
-		assert.NoError(t, err)
-		_, err = resolver.Resolve(context.Background())
-		assert.Contains(t, err.Error(), tt.errMessage, tt.name)
+		t.Run(tt.name, func(t *testing.T) {
+			resolver, err := NewResolver(ResolverSettings{
+				URIs: []string{tt.location},
+				ProviderFactories: []ProviderFactory{
+					newFakeProvider("file", func(_ context.Context, uri string, _ WatcherFunc) (*Retrieved, error) {
+						return nil, errors.New(uri)
+					}),
+				},
+				ConverterFactories: nil,
+			})
+			if tt.expectBuildErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			_, err = resolver.Resolve(context.Background())
+			assert.ErrorContains(t, err, tt.errMessage, tt.name)
+		})
 	}
 }
 
 func TestResolver(t *testing.T) {
+	numCalls := atomic.Int32{}
 	resolver, err := NewResolver(ResolverSettings{
-		URIs:       []string{"mock:"},
-		Providers:  makeMapProvidersMap(&mockProvider{retM: newConfFromFile(t, filepath.Join("testdata", "config.yaml"))}),
-		Converters: nil})
+		URIs: []string{"mock:"},
+		ProviderFactories: []ProviderFactory{
+			newMockProvider(&mockProvider{retM: map[string]any{}, closeFunc: func(context.Context) error {
+				numCalls.Add(1)
+				return nil
+			}}),
+		},
+		ConverterFactories: nil,
+	})
 	require.NoError(t, err)
 	_, errN := resolver.Resolve(context.Background())
-	assert.NoError(t, errN)
+	require.NoError(t, errN)
+	assert.Equal(t, int32(0), numCalls.Load())
 
 	errW := <-resolver.Watch()
-	assert.NoError(t, errW)
+	require.NoError(t, errW)
 
 	// Repeat Resolve/Watch.
 
 	_, errN = resolver.Resolve(context.Background())
-	assert.NoError(t, errN)
+	require.NoError(t, errN)
+	assert.Equal(t, int32(1), numCalls.Load())
 
 	errW = <-resolver.Watch()
-	assert.NoError(t, errW)
+	require.NoError(t, errW)
+
+	_, errN = resolver.Resolve(context.Background())
+	require.NoError(t, errN)
+	assert.Equal(t, int32(2), numCalls.Load())
 
 	errC := resolver.Shutdown(context.Background())
-	assert.NoError(t, errC)
+	require.NoError(t, errC)
+	assert.Equal(t, int32(3), numCalls.Load())
+}
+
+func TestResolverNewLinesInOpaqueValue(t *testing.T) {
+	_, err := NewResolver(ResolverSettings{
+		URIs:               []string{"mock:receivers:\n nop:\n"},
+		ProviderFactories:  []ProviderFactory{newMockProvider(&mockProvider{retM: map[string]any{}})},
+		ConverterFactories: nil,
+	})
+	assert.NoError(t, err)
 }
 
 func TestResolverNoLocations(t *testing.T) {
 	_, err := NewResolver(ResolverSettings{
-		URIs:       []string{},
-		Providers:  makeMapProvidersMap(&mockProvider{}),
-		Converters: nil})
+		URIs:               []string{},
+		ProviderFactories:  []ProviderFactory{newMockProvider(&mockProvider{})},
+		ConverterFactories: nil,
+	})
 	assert.Error(t, err)
 }
 
 func TestResolverNoProviders(t *testing.T) {
 	_, err := NewResolver(ResolverSettings{
-		URIs:       []string{filepath.Join("testdata", "config.yaml")},
-		Providers:  nil,
-		Converters: nil})
+		URIs:               []string{filepath.Join("testdata", "config.yaml")},
+		ProviderFactories:  nil,
+		ConverterFactories: nil,
+	})
 	assert.Error(t, err)
 }
 
 func TestResolverShutdownClosesWatch(t *testing.T) {
 	resolver, err := NewResolver(ResolverSettings{
-		URIs:       []string{filepath.Join("testdata", "config.yaml")},
-		Providers:  makeMapProvidersMap(newFileProvider(t)),
-		Converters: nil})
+		URIs:               []string{filepath.Join("testdata", "config.yaml")},
+		ProviderFactories:  []ProviderFactory{newFileProvider(t)},
+		ConverterFactories: nil,
+	})
 	require.NoError(t, err)
 	_, errN := resolver.Resolve(context.Background())
-	assert.NoError(t, errN)
+	require.NoError(t, errN)
 
 	var watcherWG sync.WaitGroup
 	watcherWG.Add(1)
 	go func() {
 		errW, ok := <-resolver.Watch()
 		// Channel is closed, no exception
-		assert.Nil(t, errW)
+		assert.NoError(t, errW)
 		assert.False(t, ok)
 		watcherWG.Done()
 	}()
 
-	assert.NoError(t, resolver.Shutdown(context.Background()))
+	require.NoError(t, resolver.Shutdown(context.Background()))
 	watcherWG.Wait()
 }
 
-func TestResolverExpandEnvVars(t *testing.T) {
-	var testCases = []struct {
-		name string // test case name (also file name containing config yaml)
-	}{
-		{name: "expand-with-no-env.yaml"},
-		{name: "expand-with-partial-env.yaml"},
-		{name: "expand-with-all-env.yaml"},
-	}
-
-	envs := map[string]string{
-		"EXTRA":                  "some string",
-		"EXTRA_MAP_VALUE_1":      "some map value_1",
-		"EXTRA_MAP_VALUE_2":      "some map value_2",
-		"EXTRA_LIST_MAP_VALUE_1": "some list map value_1",
-		"EXTRA_LIST_MAP_VALUE_2": "some list map value_2",
-		"EXTRA_LIST_VALUE_1":     "some list value_1",
-		"EXTRA_LIST_VALUE_2":     "some list value_2",
-	}
-
-	expectedCfgMap := newConfFromFile(t, filepath.Join("testdata", "expand-with-no-env.yaml"))
-	fileProvider := newFakeProvider("file", func(_ context.Context, uri string, _ WatcherFunc) (*Retrieved, error) {
-		return NewRetrieved(newConfFromFile(t, uri[5:]))
+func TestProvidesDefaultLogger(t *testing.T) {
+	factory, provider := newObservableFileProvider(t)
+	_, err := NewResolver(ResolverSettings{
+		URIs:              []string{filepath.Join("testdata", "config.yaml")},
+		ProviderFactories: []ProviderFactory{factory},
+		ConverterFactories: []ConverterFactory{NewConverterFactory(func(set ConverterSettings) Converter {
+			assert.NotNil(t, set.Logger)
+			return &mockConverter{}
+		})},
 	})
-	envProvider := newFakeProvider("env", func(_ context.Context, uri string, _ WatcherFunc) (*Retrieved, error) {
-		return NewRetrieved(envs[uri[4:]])
-	})
-
-	for _, test := range testCases {
-		t.Run(test.name, func(t *testing.T) {
-			resolver, err := NewResolver(ResolverSettings{URIs: []string{filepath.Join("testdata", test.name)}, Providers: makeMapProvidersMap(fileProvider, envProvider), Converters: nil})
-			require.NoError(t, err)
-
-			// Test that expanded configs are the same with the simple config with no env vars.
-			cfgMap, err := resolver.Resolve(context.Background())
-			require.NoError(t, err)
-			assert.Equal(t, expectedCfgMap, cfgMap.ToStringMap())
-		})
-	}
+	require.NoError(t, err)
+	require.NotNil(t, provider.logger)
 }
 
-func TestResolverDoneNotExpandOldEnvVars(t *testing.T) {
-	expectedCfgMap := map[string]interface{}{"test.1": "${EXTRA}", "test.2": "$EXTRA"}
-	fileProvider := newFakeProvider("test", func(context.Context, string, WatcherFunc) (*Retrieved, error) {
-		return NewRetrieved(expectedCfgMap)
-	})
-	envProvider := newFakeProvider("env", func(context.Context, string, WatcherFunc) (*Retrieved, error) {
-		return NewRetrieved("some string")
-	})
-	emptySchemeProvider := newFakeProvider("", func(context.Context, string, WatcherFunc) (*Retrieved, error) {
-		return NewRetrieved("some string")
-	})
+func TestResolverDefaultProviderSet(t *testing.T) {
+	envProvider := newEnvProvider()
+	fileProvider := newFileProvider(t)
 
-	resolver, err := NewResolver(ResolverSettings{URIs: []string{"test:"}, Providers: makeMapProvidersMap(fileProvider, envProvider, emptySchemeProvider), Converters: nil})
+	r, err := NewResolver(ResolverSettings{
+		URIs:              []string{"env:"},
+		ProviderFactories: []ProviderFactory{fileProvider, envProvider},
+		DefaultScheme:     "env",
+	})
 	require.NoError(t, err)
-
-	// Test that expanded configs are the same with the simple config with no env vars.
-	cfgMap, err := resolver.Resolve(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, expectedCfgMap, cfgMap.ToStringMap())
-}
-
-func TestResolverExpandMapAndSliceValues(t *testing.T) {
-	provider := newFakeProvider("input", func(context.Context, string, WatcherFunc) (*Retrieved, error) {
-		return NewRetrieved(map[string]interface{}{
-			"test_map":   map[string]interface{}{"recv": "${test:MAP_VALUE}"},
-			"test_slice": []interface{}{"${test:MAP_VALUE}"}})
-	})
-
-	const receiverExtraMapValue = "some map value"
-	testProvider := newFakeProvider("test", func(context.Context, string, WatcherFunc) (*Retrieved, error) {
-		return NewRetrieved(receiverExtraMapValue)
-	})
-
-	resolver, err := NewResolver(ResolverSettings{URIs: []string{"input:"}, Providers: makeMapProvidersMap(provider, testProvider), Converters: nil})
-	require.NoError(t, err)
-
-	cfgMap, err := resolver.Resolve(context.Background())
-	require.NoError(t, err)
-	expectedMap := map[string]interface{}{
-		"test_map":   map[string]interface{}{"recv": receiverExtraMapValue},
-		"test_slice": []interface{}{receiverExtraMapValue}}
-	assert.Equal(t, expectedMap, cfgMap.ToStringMap())
-}
-
-func TestResolverInfiniteExpand(t *testing.T) {
-	const receiverValue = "${test:VALUE}"
-	provider := newFakeProvider("input", func(context.Context, string, WatcherFunc) (*Retrieved, error) {
-		return NewRetrieved(map[string]interface{}{"test": receiverValue})
-	})
-
-	testProvider := newFakeProvider("test", func(context.Context, string, WatcherFunc) (*Retrieved, error) {
-		return NewRetrieved(receiverValue)
-	})
-
-	resolver, err := NewResolver(ResolverSettings{URIs: []string{"input:"}, Providers: makeMapProvidersMap(provider, testProvider), Converters: nil})
-	require.NoError(t, err)
-
-	_, err = resolver.Resolve(context.Background())
-	assert.ErrorIs(t, err, errTooManyRecursiveExpansions)
-}
-
-func TestResolverExpandSliceValueError(t *testing.T) {
-	provider := newFakeProvider("input", func(context.Context, string, WatcherFunc) (*Retrieved, error) {
-		return NewRetrieved(map[string]interface{}{"test": []interface{}{"${test:VALUE}"}})
-	})
-
-	testProvider := newFakeProvider("test", func(context.Context, string, WatcherFunc) (*Retrieved, error) {
-		return NewRetrieved(errors.New("invalid value"))
-	})
-
-	resolver, err := NewResolver(ResolverSettings{URIs: []string{"input:"}, Providers: makeMapProvidersMap(provider, testProvider), Converters: nil})
-	require.NoError(t, err)
-
-	_, err = resolver.Resolve(context.Background())
-	assert.EqualError(t, err, "unsupported type=*errors.errorString for retrieved config")
-}
-
-func TestResolverExpandMapValueError(t *testing.T) {
-	provider := newFakeProvider("input", func(context.Context, string, WatcherFunc) (*Retrieved, error) {
-		return NewRetrieved(map[string]interface{}{"test": []interface{}{map[string]interface{}{"test": "${test:VALUE}"}}})
-	})
-
-	testProvider := newFakeProvider("test", func(context.Context, string, WatcherFunc) (*Retrieved, error) {
-		return NewRetrieved(errors.New("invalid value"))
-	})
-
-	resolver, err := NewResolver(ResolverSettings{URIs: []string{"input:"}, Providers: makeMapProvidersMap(provider, testProvider), Converters: nil})
-	require.NoError(t, err)
-
-	_, err = resolver.Resolve(context.Background())
-	assert.EqualError(t, err, "unsupported type=*errors.errorString for retrieved config")
-}
-
-func TestResolverExpandInvalidScheme(t *testing.T) {
-	const receiverValue = "${g_c_s:VALUE}"
-	provider := newFakeProvider("input", func(context.Context, string, WatcherFunc) (*Retrieved, error) {
-		return NewRetrieved(map[string]interface{}{"test": receiverValue})
-	})
-
-	testProvider := newFakeProvider("g_c_s", func(context.Context, string, WatcherFunc) (*Retrieved, error) {
-		return NewRetrieved(receiverValue)
-	})
-
-	resolver, err := NewResolver(ResolverSettings{URIs: []string{"input:"}, Providers: makeMapProvidersMap(provider, testProvider), Converters: nil})
-	require.NoError(t, err)
-
-	_, err = resolver.Resolve(context.Background())
-	assert.EqualError(t, err, `invalid uri: "g_c_s:VALUE"`)
-}
-
-func TestResolverExpandInvalidOpaqueValue(t *testing.T) {
-	provider := newFakeProvider("input", func(context.Context, string, WatcherFunc) (*Retrieved, error) {
-		return NewRetrieved(map[string]interface{}{"test": []interface{}{map[string]interface{}{"test": "${test:$VALUE}"}}})
-	})
-
-	testProvider := newFakeProvider("test", func(context.Context, string, WatcherFunc) (*Retrieved, error) {
-		return NewRetrieved(errors.New("invalid value"))
-	})
-
-	resolver, err := NewResolver(ResolverSettings{URIs: []string{"input:"}, Providers: makeMapProvidersMap(provider, testProvider), Converters: nil})
-	require.NoError(t, err)
-
-	_, err = resolver.Resolve(context.Background())
-	assert.EqualError(t, err, `the uri "test:$VALUE" contains unsupported characters ('$')`)
-}
-
-func makeMapProvidersMap(providers ...Provider) map[string]Provider {
-	ret := make(map[string]Provider, len(providers))
-	for _, provider := range providers {
-		ret[provider.Scheme()] = provider
-	}
-	return ret
+	assert.NotNil(t, r.defaultScheme)
+	_, ok := r.providers["env"]
+	assert.True(t, ok)
 }

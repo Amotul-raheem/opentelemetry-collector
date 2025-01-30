@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package testcomponents
 
@@ -19,28 +8,39 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"go.opentelemetry.io/collector/component/componenttest"
+	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/pdata/pprofile"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 )
 
 func TestExampleExporter(t *testing.T) {
 	exp := &ExampleExporter{}
 	host := componenttest.NewNopHost()
-	assert.False(t, exp.Started)
-	assert.NoError(t, exp.Start(context.Background(), host))
-	assert.True(t, exp.Started)
+	assert.False(t, exp.Started())
+	require.NoError(t, exp.Start(context.Background(), host))
+	assert.True(t, exp.Started())
 
-	assert.Equal(t, 0, len(exp.Traces))
-	assert.NoError(t, exp.ConsumeTraces(context.Background(), ptrace.Traces{}))
-	assert.Equal(t, 1, len(exp.Traces))
+	assert.Empty(t, exp.Traces)
+	require.NoError(t, exp.ConsumeTraces(context.Background(), ptrace.Traces{}))
+	assert.Len(t, exp.Traces, 1)
 
-	assert.Equal(t, 0, len(exp.Metrics))
-	assert.NoError(t, exp.ConsumeMetrics(context.Background(), pmetric.Metrics{}))
-	assert.Equal(t, 1, len(exp.Metrics))
+	assert.Empty(t, exp.Metrics)
+	require.NoError(t, exp.ConsumeMetrics(context.Background(), pmetric.Metrics{}))
+	assert.Len(t, exp.Metrics, 1)
 
-	assert.False(t, exp.Stopped)
-	assert.NoError(t, exp.Shutdown(context.Background()))
-	assert.True(t, exp.Stopped)
+	assert.Empty(t, exp.Logs)
+	require.NoError(t, exp.ConsumeLogs(context.Background(), plog.Logs{}))
+	assert.Len(t, exp.Logs, 1)
+
+	assert.Empty(t, exp.Profiles)
+	require.NoError(t, exp.ConsumeProfiles(context.Background(), pprofile.Profiles{}))
+	assert.Len(t, exp.Profiles, 1)
+
+	assert.False(t, exp.Stopped())
+	require.NoError(t, exp.Shutdown(context.Background()))
+	assert.True(t, exp.Stopped())
 }
